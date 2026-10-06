@@ -301,6 +301,7 @@ async function installLinux($: Host, h: Extract<Home, { kind: 'linux' }>): Promi
   const script = `${h.dir}/copy.sh`
   const want = new Map([
     [script, await $.fs.read(`${$.plugin.root}/linux/copy.sh`)],
+    [`${h.dir}/clip.py`, await $.fs.read(`${$.plugin.root}/linux/clip.py`)],
     [
       `${h.dataHome}/mime/packages/claude-copy.xml`,
       `<?xml version="1.0" encoding="UTF-8"?>
@@ -329,12 +330,38 @@ Terminal=false
   for (const [path, text] of want) if ((await $.fs.read(path).catch(() => '')) !== text) stale.push(path)
   const current = await $.process.run(['xdg-mime', 'query', 'default', MIME]).then(r => r.stdout.trim(), () => '')
   const runnable = await $.process.run(['test', '-x', script]).then(r => r.exitCode === 0, () => false)
-  if (!stale.length && current === DESKTOP && runnable) return
-  for (const path of stale) await $.fs.write(path, want.get(path) ?? '')
-  await run($, ['chmod', '755', script])
-  await run($, ['update-mime-database', `${h.dataHome}/mime`])
-  await $.process.run(['update-desktop-database', `${h.dataHome}/applications`]).catch(() => undefined)
-  await run($, ['xdg-mime', 'default', DESKTOP, MIME])
+  if (stale.length || current !== DESKTOP || !runnable) {
+    for (const path of stale) await $.fs.write(path, want.get(path) ?? '')
+    await run($, ['chmod', '755', script])
+    await run($, ['update-mime-database', `${h.dataHome}/mime`])
+    await $.process.run(['update-desktop-database', `${h.dataHome}/applications`]).catch(() => undefined)
+    await run($, ['xdg-mime', 'default', DESKTOP, MIME])
+  }
+}
+
+// The package that gives a click something to copy with: wl-clipboard on a
+// Wayland session with no X11 layer, xclip otherwise.
+const INSTALL: Record<string, (pkg: string) => string> = {
+  'apt-get': pkg => `sudo apt install ${pkg}`,
+  dnf: pkg => `sudo dnf install ${pkg}`,
+  pacman: pkg => `sudo pacman -S ${pkg}`,
+  zypper: pkg => `sudo zypper install ${pkg}`,
+}
+const FIRST_INSTALLER = `for t in ${Object.keys(INSTALL).join(' ')}; do command -v "$t" >/dev/null 2>&1 && { echo "$t"; break; }; done`
+const WARNED_KEY = 'warned-session'
+
+// The one notice this mod ever shows: a click would copy nothing. copy.sh
+// answers that itself (--check runs the exact choice a click makes), so the
+// notice and the click cannot disagree. Once per session, reloads included.
+async function warnIfNothingCopies($: Host, h: Extract<Home, { kind: 'linux' }>): Promise<void> {
+  if ((await $.process.run(['sh', `${h.dir}/copy.sh`, '--check'])).exitCode === 0) return
+  const session = await $.session.id()
+  if ((await $.store.get(WARNED_KEY)) === session) return
+  await $.store.set(WARNED_KEY, session)
+  const pkg = (await $.env.get('WAYLAND_DISPLAY')) && !(await $.env.get('DISPLAY')) ? 'wl-clipboard' : 'xclip'
+  const installer = (await $.process.run(['sh', '-c', FIRST_INSTALLER])).stdout.trim()
+  const how = INSTALL[installer]?.(pkg) ?? `install ${pkg}`
+  $.ui.log(`copy-button: nothing on this system can copy to the clipboard; to make the copy links work, run: ${how}`)
 }
 
 const install = ($: Host, h: Home) => (h.kind === 'wsl' ? installWsl($, h) : installLinux($, h))
@@ -413,6 +440,7 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const r = await next(e)
     later($, 'install', h => install($, h))
+    later($, 'clipboard check', h => (h.kind === 'linux' ? warnIfNothingCopies($, h) : Promise.resolve()))
     later($, 'stamp', h => stamp($, h))
     later($, 'prune', h => prune($, h))
     later($, 'save', h => saveAll($, h))

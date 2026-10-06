@@ -36,9 +36,9 @@ Answer `y` to add the marketplace and pick the user scope. That's it, it is
 active right away. Needs Claude Code 2.1.287 or later (the version that added
 mods).
 
-On Linux you also need a clipboard tool: `xclip` (X11) or `wl-clipboard`
-(Wayland), from your package manager. Desktops already ship the other two
-pieces it uses, `xdg-utils` and `shared-mime-info`.
+Nothing else to install, on Linux either. If you have `wl-copy`, `xclip` or
+`xsel` it uses that; if not, it copies with its own small helper, which only
+needs the Python and X11 library every Linux desktop already ships.
 
 If Claude Code opens fullscreen for you (newer installs can), switch to normal
 mode with `/tui default`. In fullscreen the mod steps aside.
@@ -48,8 +48,8 @@ mode with `/tui default`. In fullscreen the mod steps aside.
 | Setup | Status |
 |---|---|
 | WSL 2 + Windows Terminal, normal mode | Yes. Tested. |
-| Linux, X11 (tested: Xubuntu 24.04, xfce4-terminal, xclip) | Yes. Tested with a real Ctrl+click. |
-| Linux, Wayland (wl-clipboard) | Should work, same handler. Not tested yet. |
+| Linux, X11 (tested: Xubuntu 24.04, xfce4-terminal) | Yes. Tested with a real Ctrl+click, with `xclip` and with no clipboard tool at all. |
+| Linux, Wayland | Yes. Tested in a Weston session, with `wl-copy` and with no clipboard tool at all. GNOME and KDE on Wayland not tested yet. |
 | Other Linux terminals (GNOME Terminal, Konsole, kitty...) | Should work if the terminal opens `file:` links on Ctrl+click. Only xfce4-terminal is tested. |
 | Bare window managers (i3, sway...) | Probably not: there `xdg-open` guesses the file type from its content, so the click opens the block in a text editor. |
 | SSH sessions, including `ssh -X` | No, on purpose: the links would point at the remote machine. |
@@ -75,7 +75,12 @@ Ctrl+click on a link. So:
 |---|---|---|
 | Files | `%LOCALAPPDATA%\claude-copy` | `~/.local/share/claude-copy` (`$XDG_DATA_HOME`) |
 | File type | `HKCU\Software\Classes\.ccopy` | shared-mime type `application/x-claude-copy` + a hidden `.desktop` entry, set as its default app |
-| Handler | `windows/copy.vbs` (Windows `clip`) | `linux/copy.sh` (`wl-copy`, `xclip` or `xsel`) |
+| Handler | `windows/copy.vbs` (Windows `clip`) | `linux/copy.sh`: `wl-copy`, `xclip` or `xsel` when installed, otherwise `linux/clip.py` |
+
+`clip.py` does what `xclip` does, through the X11 library directly: it holds
+the copied text in a small background process until you copy something else,
+then exits. On Wayland desktops it goes through their X11 layer (Xwayland),
+whose clipboard is shared with Wayland apps.
 
 Why a custom extension instead of linking a script: Windows Terminal warns
 before opening anything in `PATHEXT` (`.vbs`, `.cmd`...). `.ccopy` isn't in
@@ -97,13 +102,17 @@ Read this before installing anything that runs scripts, including this.
   old session folders.
 
 **Linux**
-- **Files:** `~/.local/share/claude-copy` (code blocks and `copy.sh`),
+- **Files:** `~/.local/share/claude-copy` (code blocks, `copy.sh`, `clip.py`),
   `~/.local/share/mime/packages/claude-copy.xml`,
   `~/.local/share/applications/claude-copy.desktop`, and one line in
   `~/.config/mimeapps.list` (written by `xdg-mime`).
 - **Commands:** `uname`, `xdg-mime`, `update-mime-database`,
-  `update-desktop-database`, `chmod` on its own script, `rm` to prune old
-  session folders.
+  `update-desktop-database`, `chmod` on its own script, `sh` to check what can
+  copy, `rm` to prune old session folders. On a click: your clipboard tool, or
+  `python3 clip.py`.
+- **Notice:** if nothing on the system can copy (no clipboard tool, and no
+  Python or X11 library), it says so once per session with the install
+  command for your system. Otherwise it never prints anything.
 
 **Both**
 - Checked each session and repaired if something removed it. All of it runs

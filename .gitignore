@@ -2,3 +2,4 @@
 node_modules/
 TASKS.md
 .tools/
+__pycache__/
