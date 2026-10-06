@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.6.1
+
+- Linux: a click now fills the primary selection too, so a middle-click or
+  Shift+Insert pastes the block, not whatever text was last highlighted.
+
 ## 0.6.0
 
 - Linux needs nothing installed: with no `wl-copy`, `xclip` or `xsel`, the

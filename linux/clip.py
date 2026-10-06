@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""Claude Code copy button: put a file's text on the X11 CLIPBOARD with no
-clipboard tool installed, through libX11 directly (ctypes, standard library
+"""Claude Code copy button: put a file's text on the X11 CLIPBOARD and PRIMARY
+selection with no clipboard tool installed, through libX11 directly (ctypes, standard library
 only). Also reaches Wayland desktops through their X11 layer (Xwayland), whose
 clipboard GNOME and KDE share with Wayland apps.
 
 Like xclip, the clipboard text lives in this process: it forks, owns the
-selection in the background and answers paste requests until another program
-takes the clipboard. Large blocks go out with the INCR protocol.
+selections in the background and answers paste requests until other programs
+have taken both. Both, because Linux pastes from two places: Ctrl+V and
+Ctrl+Shift+V read CLIPBOARD, a middle-click or Shift+Insert reads PRIMARY. Large blocks go out with the INCR protocol.
 
 Usage: clip.py FILE    copy FILE's bytes, exactly as they are
        clip.py --check say whether this can copy here (exit 0) or not (3)
@@ -108,6 +109,7 @@ class Owner:
         self.fd = x.XConnectionNumber(dpy)
         atom = lambda n: x.XInternAtom(dpy, n.encode(), 0)
         self.clipboard, self.targets, self.timestamp = atom("CLIPBOARD"), atom("TARGETS"), atom("TIMESTAMP")
+        self.selections = {self.clipboard, atom("PRIMARY")}
         self.multiple, self.atom_pair, self.incr = atom("MULTIPLE"), atom("ATOM_PAIR"), atom("INCR")
         utf8_string = atom("UTF8_STRING")
         # target -> (property type, encoding: None for the bytes as they are)
@@ -123,6 +125,7 @@ class Owner:
         self.window = x.XCreateSimpleWindow(dpy, x.XDefaultRootWindow(dpy), 0, 0, 1, 1, 0, 0, 0)
         self.transfers = {}  # (requestor, property) -> [type, bytes, offset, last activity]
         self.time = 0
+        self.owned = set()
 
     def next_event(self, timeout):
         """The next X event, or None once `timeout` seconds pass (None: wait forever)."""
@@ -138,7 +141,8 @@ class Owner:
         return ev
 
     def own(self):
-        """Takes the CLIPBOARD with a real server timestamp (ICCCM), not CurrentTime."""
+        """Takes CLIPBOARD and PRIMARY with a real server timestamp (ICCCM), not
+        CurrentTime. Success means CLIPBOARD was taken; PRIMARY is a bonus."""
         x = self.x
         if not self.window:
             return False
@@ -152,9 +156,11 @@ class Owner:
             if ev.type == PROPERTY_NOTIFY and ev.xproperty.window == self.window:
                 self.time = ev.xproperty.time
                 break
-        x.XSetSelectionOwner(self.dpy, self.clipboard, self.window, self.time)
+        for selection in self.selections:
+            x.XSetSelectionOwner(self.dpy, selection, self.window, self.time)
         x.XFlush(self.dpy)
-        return x.XGetSelectionOwner(self.dpy, self.clipboard) == self.window
+        self.owned = {sel for sel in self.selections if x.XGetSelectionOwner(self.dpy, sel) == self.window}
+        return self.clipboard in self.owned
 
     def notify(self, req, prop):
         ev = XEvent()
@@ -207,7 +213,7 @@ class Owner:
 
     def answer(self, req):
         prop = req.property or req.target  # obsolete clients send no property
-        ok = req.selection == self.clipboard and not (req.time and before(req.time, self.time))
+        ok = req.selection in self.owned and not (req.time and before(req.time, self.time))
         if ok:
             if req.target == self.multiple:
                 ok = req.property != 0 and self.convert_multiple(req.requestor, prop)
@@ -234,8 +240,7 @@ class Owner:
             self.finish(key)
 
     def serve(self):
-        owning = True
-        while owning or self.transfers:
+        while self.owned or self.transfers:
             ev = self.next_event(STALL_TIMEOUT if self.transfers else None)
             if ev is None or self.transfers:  # drop pastes whose requestor went quiet
                 now = time.monotonic()
@@ -247,8 +252,8 @@ class Owner:
                 self.answer(ev.xselectionrequest)
             elif ev.type == PROPERTY_NOTIFY:
                 self.send_chunk(ev.xproperty)
-            elif ev.type == SELECTION_CLEAR and ev.xselectionclear.selection == self.clipboard:
-                owning = False  # finish the pastes in flight, then leave
+            elif ev.type == SELECTION_CLEAR:
+                self.owned.discard(ev.xselectionclear.selection)  # both gone: finish pastes in flight, leave
             self.x.XFlush(self.dpy)
 
 

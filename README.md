@@ -77,6 +77,10 @@ Ctrl+click on a link. So:
 | File type | `HKCU\Software\Classes\.ccopy` | shared-mime type `application/x-claude-copy` + a hidden `.desktop` entry, set as its default app |
 | Handler | `windows/copy.vbs` (Windows `clip`) | `linux/copy.sh`: `wl-copy`, `xclip` or `xsel` when installed, otherwise `linux/clip.py` |
 
+On Linux a click fills both places Linux pastes from: the clipboard
+(Ctrl+V, or Ctrl+Shift+V in a terminal) and the primary selection
+(middle-click, Shift+Insert). Whichever way you paste, you get the block.
+
 `clip.py` does what `xclip` does, through the X11 library directly: it holds
 the copied text in a small background process until you copy something else,
 then exits. On Wayland desktops it goes through their X11 layer (Xwayland),
