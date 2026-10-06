@@ -3,7 +3,7 @@
 **Ctrl+click to copy any code block in Claude Code.** One click, exact text,
 straight to your Windows clipboard.
 
-![Ctrl+clicking the copy link on a code block in Claude Code](assets/demo.gif)
+![Ctrl+clicking the copy link on a code block, then pasting it into the prompt](assets/demo.gif)
 
 > **Built for one setup:** Claude Code running in **WSL**, shown in
 > **Windows Terminal**, in **normal mode** (the default renderer, not
