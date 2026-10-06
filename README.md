@@ -6,8 +6,9 @@ straight to your Windows clipboard.
 ![Ctrl+clicking the copy link on a code block in Claude Code](assets/demo.gif)
 
 > **Built for one setup:** Claude Code running in **WSL**, shown in
-> **Windows Terminal**, with the **classic renderer** (the default, not
-> fullscreen). Anywhere else it stays out of the way. See [Where it works](#where-it-works).
+> **Windows Terminal**, in **normal mode** (the default renderer, not
+> fullscreen). You **Ctrl+click** the link. Anywhere else it stays out of the
+> way. See [Where it works](#where-it-works).
 
 ## Why
 
