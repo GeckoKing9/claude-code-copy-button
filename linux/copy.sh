@@ -4,20 +4,44 @@
 # wl-copy, xclip or xsel when installed, else with clip.py (libX11, no install).
 # Only .ccopy files in this script's own folder are copied, so a stray .ccopy
 # file from anywhere else cannot replace the clipboard.
+#
+# copy.sh --check prints the tool a click would use here and exits 0, or
+# exits 3 when nothing can copy; the mod asks this before warning anyone.
 home=$(dirname "$(readlink -f "$0")")
+
+# The tool a click uses, in the order it tries them.
+backend() {
+  if [ -n "${WAYLAND_DISPLAY:-}" ] && command -v wl-copy >/dev/null 2>&1; then
+    echo wl-copy
+  elif [ -n "${DISPLAY:-}" ] && command -v xclip >/dev/null 2>&1; then
+    echo xclip
+  elif [ -n "${DISPLAY:-}" ] && command -v xsel >/dev/null 2>&1; then
+    echo xsel
+  elif [ -n "${DISPLAY:-}" ] && command -v python3 >/dev/null 2>&1 && python3 "$home/clip.py" --check; then
+    echo clip.py
+  else
+    return 3
+  fi
+}
+
+if [ "${1:-}" = --check ]; then
+  backend
+  exit
+fi
+
 src=$(readlink -f "$1") || exit 1
 case "$src" in
   "$home"/*.ccopy) ;;
   *) exit 2 ;;
 esac
-if [ -n "${WAYLAND_DISPLAY:-}" ] && command -v wl-copy >/dev/null 2>&1; then
-  exec wl-copy < "$src"
-elif [ -n "${DISPLAY:-}" ] && command -v xclip >/dev/null 2>&1; then
-  exec xclip -selection clipboard -in < "$src"
-elif [ -n "${DISPLAY:-}" ] && command -v xsel >/dev/null 2>&1; then
-  exec xsel --clipboard --input < "$src"
-elif [ -n "${DISPLAY:-}" ] && command -v python3 >/dev/null 2>&1 && python3 "$home/clip.py" "$src"; then
-  exit 0 # no clipboard tool: clip.py owns the clipboard through libX11 itself
-fi
-command -v notify-send >/dev/null 2>&1 && notify-send "Claude Code copy button" "Nothing here can copy to the clipboard. Install wl-clipboard (Wayland) or xclip (X11)."
+case "$(backend)" in
+  wl-copy) exec wl-copy < "$src" ;;
+  xclip) exec xclip -selection clipboard -in < "$src" ;;
+  xsel) exec xsel --clipboard --input < "$src" ;;
+  clip.py)
+    python3 "$home/clip.py" "$src" && exit 0
+    msg="Copying failed. Try the link again." ;;
+  *) msg="Nothing here can copy to the clipboard. Install wl-clipboard (Wayland) or xclip (X11)." ;;
+esac
+command -v notify-send >/dev/null 2>&1 && notify-send "Claude Code copy button" "$msg"
 exit 3

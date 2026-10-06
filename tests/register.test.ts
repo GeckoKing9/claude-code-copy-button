@@ -20,6 +20,7 @@ const world = (on: On, { canCopy = true, installer, stored, gate, wsl = true, li
   mock.env(on, linux ? { HOME: '/home/Jöhn Smith', ...(linux.env ?? { DISPLAY: ':0' }) } : wsl ? { WSL_DISTRO_NAME: 'Ubuntu' } : {})
   let xdgDefault = ''
   let executable = false
+  let mimeBroken = false
   const runs: string[][] = []
   const files = new Map<string, string>()
   const reg = new Map<string, string>()
@@ -29,8 +30,9 @@ const world = (on: On, { canCopy = true, installer, stored, gate, wsl = true, li
     if (gate && (argv[0] === 'cmd.exe' || argv[0] === 'uname')) await gate
     if (argv[0] === 'uname') return result(0, `${linux?.uname ?? 'Linux'}\n`)
     if (argv[0] === 'test') return result(executable ? 0 : 1)
-    if (argv[0] === 'sh' && argv[2]?.startsWith('command -v wl-copy')) return result(canCopy ? 0 : 1)
-    if (argv[0] === 'sh' && argv[2]?.startsWith('command -v ')) return result(argv[2] === `command -v ${installer}` ? 0 : 1)
+    if (argv[0] === 'update-mime-database' && mimeBroken) return result(1)
+    if (argv[0] === 'sh' && argv[2] === '--check') return result(canCopy ? 0 : 3, canCopy ? 'xclip\n' : '')
+    if (argv[0] === 'sh' && argv[1] === '-c' && argv[2]?.startsWith('for t in')) return result(0, installer ? `${installer}\n` : '')
     if (argv[0] === 'chmod') executable = true
     if (argv[0] === 'xdg-mime' && argv[1] === 'query') return result(0, xdgDefault ? `${xdgDefault}\n` : '')
     if (argv[0] === 'xdg-mime' && argv[1] === 'default') {
@@ -64,7 +66,7 @@ const world = (on: On, { canCopy = true, installer, stored, gate, wsl = true, li
   on('ui.invalidate', () => ({ value: undefined }))
   const notices: string[] = []
   on('ui.log', ($, e) => {
-    notices.push(e.text)
+    if (e.to !== 'debug') notices.push(e.text)
     return { value: undefined }
   })
   const asked: { text: string; isFirstOfReply: boolean }[] = []
@@ -75,7 +77,7 @@ const world = (on: On, { canCopy = true, installer, stored, gate, wsl = true, li
   })
   const adds = () => runs.filter(r => r[0] === 'reg.exe' && r[1] === 'add')
   const saved = () => [...files.entries()].filter(([p]) => p.endsWith('.ccopy'))
-  return { notices, runs, files, reg, asked, adds, saved, clock, lose: () => (executable = false) }
+  return { breakMime: () => (mimeBroken = true), notices, runs, files, reg, asked, adds, saved, clock, lose: () => (executable = false) }
 }
 
 const message = (text: string, extra: Record<string, unknown> = {}, surface: 'terminal' | 'desktop' = 'terminal') => ({
@@ -304,8 +306,28 @@ test('linux: with nothing that can copy, one notice names the command for this s
   expect(w.notices).toEqual(['copy-button: nothing on this system can copy to the clipboard; to make the copy links work, run: sudo dnf install xclip'])
 })
 
-test('linux: with no known package manager, the notice names both tools', async ($, on) => {
+test('linux: with no known package manager, the notice names the package', async ($, on) => {
   const w = world(on, { linux: {}, canCopy: false })
   await started($)
-  expect(w.notices[0]).toEndWith('install xclip (X11) or wl-clipboard (Wayland)')
+  expect(w.notices).toEqual(['copy-button: nothing on this system can copy to the clipboard; to make the copy links work, run: install xclip'])
+})
+
+test('linux: a Wayland session with no X11 layer is told about wl-clipboard', async ($, on) => {
+  const w = world(on, { linux: { env: { WAYLAND_DISPLAY: 'wayland-0' } }, canCopy: false, installer: 'pacman' })
+  await started($)
+  expect(w.notices).toEqual(['copy-button: nothing on this system can copy to the clipboard; to make the copy links work, run: sudo pacman -S wl-clipboard'])
+})
+
+test('linux: the notice shows once per session, reloads included', async ($, on) => {
+  const w = world(on, { linux: {}, canCopy: false, installer: 'apt-get' })
+  await started($)
+  await started($)
+  expect(w.notices.length).toBe(1)
+})
+
+test('linux: the notice comes even when installing the file type failed', async ($, on) => {
+  const w = world(on, { linux: {}, canCopy: false, installer: 'apt-get', failRegAdd: false })
+  w.breakMime()
+  await started($)
+  expect(w.notices.length).toBe(1)
 })

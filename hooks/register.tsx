@@ -337,33 +337,31 @@ Terminal=false
     await $.process.run(['update-desktop-database', `${h.dataHome}/applications`]).catch(() => undefined)
     await run($, ['xdg-mime', 'default', DESKTOP, MIME])
   }
-  await warnIfNothingCopies($)
 }
 
-// What copy.sh can copy with, checked the way copy.sh tries it: a clipboard
-// tool, else Python with ctypes and libX11 for clip.py.
-const CAN_COPY = [
-  'command -v wl-copy || command -v xclip || command -v xsel ||',
-  'python3 -c "import ctypes, ctypes.util, sys; sys.exit(0 if ctypes.util.find_library(\'X11\') else 1)"',
-].join(' ')
-const INSTALLERS: [string, string][] = [
-  ['apt-get', 'sudo apt install xclip'],
-  ['dnf', 'sudo dnf install xclip'],
-  ['pacman', 'sudo pacman -S xclip'],
-  ['zypper', 'sudo zypper install xclip'],
-]
+// The package that gives a click something to copy with: wl-clipboard on a
+// Wayland session with no X11 layer, xclip otherwise.
+const INSTALL: Record<string, (pkg: string) => string> = {
+  'apt-get': pkg => `sudo apt install ${pkg}`,
+  dnf: pkg => `sudo dnf install ${pkg}`,
+  pacman: pkg => `sudo pacman -S ${pkg}`,
+  zypper: pkg => `sudo zypper install ${pkg}`,
+}
+const FIRST_INSTALLER = `for t in ${Object.keys(INSTALL).join(' ')}; do command -v "$t" >/dev/null 2>&1 && { echo "$t"; break; }; done`
+const WARNED_KEY = 'warned-session'
 
-// The one notice this mod ever shows: a click would copy nothing, so say so
-// once per session, with the command for this system.
-async function warnIfNothingCopies($: Host): Promise<void> {
-  if ((await $.process.run(['sh', '-c', CAN_COPY])).exitCode === 0) return
-  let how = 'install xclip (X11) or wl-clipboard (Wayland)'
-  for (const [tool, command] of INSTALLERS)
-    if ((await $.process.run(['sh', '-c', `command -v ${tool}`])).exitCode === 0) {
-      how = `run: ${command}`
-      break
-    }
-  $.ui.log(`copy-button: nothing on this system can copy to the clipboard; to make the copy links work, ${how}`)
+// The one notice this mod ever shows: a click would copy nothing. copy.sh
+// answers that itself (--check runs the exact choice a click makes), so the
+// notice and the click cannot disagree. Once per session, reloads included.
+async function warnIfNothingCopies($: Host, h: Extract<Home, { kind: 'linux' }>): Promise<void> {
+  if ((await $.process.run(['sh', `${h.dir}/copy.sh`, '--check'])).exitCode === 0) return
+  const session = await $.session.id()
+  if ((await $.store.get(WARNED_KEY)) === session) return
+  await $.store.set(WARNED_KEY, session)
+  const pkg = (await $.env.get('WAYLAND_DISPLAY')) && !(await $.env.get('DISPLAY')) ? 'wl-clipboard' : 'xclip'
+  const installer = (await $.process.run(['sh', '-c', FIRST_INSTALLER])).stdout.trim()
+  const how = INSTALL[installer]?.(pkg) ?? `install ${pkg}`
+  $.ui.log(`copy-button: nothing on this system can copy to the clipboard; to make the copy links work, run: ${how}`)
 }
 
 const install = ($: Host, h: Home) => (h.kind === 'wsl' ? installWsl($, h) : installLinux($, h))
@@ -442,6 +440,7 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const r = await next(e)
     later($, 'install', h => install($, h))
+    later($, 'clipboard check', h => (h.kind === 'linux' ? warnIfNothingCopies($, h) : Promise.resolve()))
     later($, 'stamp', h => stamp($, h))
     later($, 'prune', h => prune($, h))
     later($, 'save', h => saveAll($, h))
