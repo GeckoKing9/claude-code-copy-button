@@ -8,13 +8,13 @@ const URL = 'file:///C:/Users/Jöhn%20Smith%20%28x%29/AppData/Local/claude-copy/
 const REPLY = 'First line.\n\n```bash\necho hi\n```\n\nLast line.'
 const CLASSES = 'HKCU\\Software\\Classes'
 
-type Opts = { stored?: Record<string, unknown>; gate?: Promise<void>; wsl?: boolean; linux?: { uname?: string; env?: Record<string, string> }; registry?: 'missing' | 'current'; replies?: string[]; failRegAdd?: boolean; failWrite?: (path: string) => boolean }
+type Opts = { canCopy?: boolean; installer?: string; stored?: Record<string, unknown>; gate?: Promise<void>; wsl?: boolean; linux?: { uname?: string; env?: Record<string, string> }; registry?: 'missing' | 'current'; replies?: string[]; failRegAdd?: boolean; failWrite?: (path: string) => boolean }
 
 const result = (exitCode: number, stdout = '') => ({ value: { exitCode, stdout, stderr: exitCode ? 'failed' : '', isStdoutTruncated: false, isStderrTruncated: false } })
 
 // The world beneath the mod: WSL or not, Windows, a file system in memory, the
 // registry, and the engine's stock drawing (which echoes what it was asked).
-const world = (on: On, { stored, gate, wsl = true, linux, registry = 'missing', replies = [], failRegAdd = false, failWrite = () => false }: Opts = {}) => {
+const world = (on: On, { canCopy = true, installer, stored, gate, wsl = true, linux, registry = 'missing', replies = [], failRegAdd = false, failWrite = () => false }: Opts = {}) => {
   mock.store(on, stored)
   const clock = mock.clock(on)
   mock.env(on, linux ? { HOME: '/home/Jöhn Smith', ...(linux.env ?? { DISPLAY: ':0' }) } : wsl ? { WSL_DISTRO_NAME: 'Ubuntu' } : {})
@@ -29,6 +29,8 @@ const world = (on: On, { stored, gate, wsl = true, linux, registry = 'missing', 
     if (gate && (argv[0] === 'cmd.exe' || argv[0] === 'uname')) await gate
     if (argv[0] === 'uname') return result(0, `${linux?.uname ?? 'Linux'}\n`)
     if (argv[0] === 'test') return result(executable ? 0 : 1)
+    if (argv[0] === 'sh' && argv[2]?.startsWith('command -v wl-copy')) return result(canCopy ? 0 : 1)
+    if (argv[0] === 'sh' && argv[2]?.startsWith('command -v ')) return result(argv[2] === `command -v ${installer}` ? 0 : 1)
     if (argv[0] === 'chmod') executable = true
     if (argv[0] === 'xdg-mime' && argv[1] === 'query') return result(0, xdgDefault ? `${xdgDefault}\n` : '')
     if (argv[0] === 'xdg-mime' && argv[1] === 'default') {
@@ -46,7 +48,7 @@ const world = (on: On, { stored, gate, wsl = true, linux, registry = 'missing', 
     }
     return result(0)
   })
-  on('fs.read', ($, e) => (e.path.endsWith('/windows/copy.vbs') ? { value: 'VBS' } : e.path.endsWith('/linux/copy.sh') ? { value: 'SH' } : files.has(e.path) ? { value: files.get(e.path) ?? '' } : { deny: 'ENOENT' }))
+  on('fs.read', ($, e) => (e.path.endsWith('/windows/copy.vbs') ? { value: 'VBS' } : e.path.endsWith('/linux/copy.sh') ? { value: 'SH' } : e.path.endsWith('/linux/clip.py') ? { value: 'PY' } : files.has(e.path) ? { value: files.get(e.path) ?? '' } : { deny: 'ENOENT' }))
   on('fs.write', ($, e) => {
     if (failWrite(e.path)) return { deny: 'EBUSY' }
     files.set(e.path, e.text)
@@ -60,6 +62,11 @@ const world = (on: On, { stored, gate, wsl = true, linux, registry = 'missing', 
   on('session.id', () => ({ value: 'sess-1' }))
   on('session.messages', () => ({ value: replies.map(text => ({ role: 'assistant' as const, text, toolUses: [] })) }))
   on('ui.invalidate', () => ({ value: undefined }))
+  const notices: string[] = []
+  on('ui.log', ($, e) => {
+    notices.push(e.text)
+    return { value: undefined }
+  })
   const asked: { text: string; isFirstOfReply: boolean }[] = []
   on('ui.render', ($, e) => {
     const p = e.props as { text?: string; isFirstOfReply?: boolean }
@@ -68,7 +75,7 @@ const world = (on: On, { stored, gate, wsl = true, linux, registry = 'missing', 
   })
   const adds = () => runs.filter(r => r[0] === 'reg.exe' && r[1] === 'add')
   const saved = () => [...files.entries()].filter(([p]) => p.endsWith('.ccopy'))
-  return { runs, files, reg, asked, adds, saved, clock, lose: () => (executable = false) }
+  return { notices, runs, files, reg, asked, adds, saved, clock, lose: () => (executable = false) }
 }
 
 const message = (text: string, extra: Record<string, unknown> = {}, surface: 'terminal' | 'desktop' = 'terminal') => ({
@@ -200,6 +207,8 @@ test('linux: the file type is installed once, as the default app, with a quoted 
   const w = world(on, { linux: {} })
   await started($)
   expect(w.files.get(`${LINUX_DIR}/copy.sh`)).toBe('SH')
+  expect(w.files.get(`${LINUX_DIR}/clip.py`)).toBe('PY')
+  expect(w.notices).toEqual([])
   expect(w.files.get('/home/Jöhn Smith/.local/share/mime/packages/claude-copy.xml')).toContain('<glob pattern="*.ccopy"')
   expect(w.files.get('/home/Jöhn Smith/.local/share/applications/claude-copy.desktop')).toContain(`Exec="${LINUX_DIR}/copy.sh" %f`)
   const ran = (name: string) => w.runs.filter(r => r[0] === name).map(r => r.join(' '))
@@ -287,4 +296,16 @@ test('a resumed session drawing before the lookup uses the folder a past session
   const kept = { kind: 'wsl', dir: DIR, win: `${LOCAL}\\claude-copy`, url: 'file:///C:/kept', systemRoot: 'C:\\WINDOWS' }
   world(on, { stored: { 'home.v3': kept } })
   expect(flat(await $.ui.render(message(REPLY)))).toContain('(file:///C:/kept/sess-1/')
+})
+
+test('linux: with nothing that can copy, one notice names the command for this system', async ($, on) => {
+  const w = world(on, { linux: {}, canCopy: false, installer: 'dnf' })
+  await started($)
+  expect(w.notices).toEqual(['copy-button: nothing on this system can copy to the clipboard; to make the copy links work, run: sudo dnf install xclip'])
+})
+
+test('linux: with no known package manager, the notice names both tools', async ($, on) => {
+  const w = world(on, { linux: {}, canCopy: false })
+  await started($)
+  expect(w.notices[0]).toEndWith('install xclip (X11) or wl-clipboard (Wayland)')
 })

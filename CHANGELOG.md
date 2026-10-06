@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.6.0
+
+- Linux needs nothing installed: with no `wl-copy`, `xclip` or `xsel`, the
+  handler copies with `linux/clip.py`, which owns the clipboard through
+  libX11 (Python standard library only), INCR included for large blocks.
+- Wayland tested in a Weston session, through `wl-copy` and, with no tool,
+  through Xwayland.
+- If nothing can copy, one notice per session names the install command for
+  the system (apt, dnf, pacman, zypper).
+
 ## 0.5.0
 
 - Linux desktops: a `.ccopy` file type (shared-mime type plus a hidden

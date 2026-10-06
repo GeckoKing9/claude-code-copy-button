@@ -301,6 +301,7 @@ async function installLinux($: Host, h: Extract<Home, { kind: 'linux' }>): Promi
   const script = `${h.dir}/copy.sh`
   const want = new Map([
     [script, await $.fs.read(`${$.plugin.root}/linux/copy.sh`)],
+    [`${h.dir}/clip.py`, await $.fs.read(`${$.plugin.root}/linux/clip.py`)],
     [
       `${h.dataHome}/mime/packages/claude-copy.xml`,
       `<?xml version="1.0" encoding="UTF-8"?>
@@ -329,12 +330,40 @@ Terminal=false
   for (const [path, text] of want) if ((await $.fs.read(path).catch(() => '')) !== text) stale.push(path)
   const current = await $.process.run(['xdg-mime', 'query', 'default', MIME]).then(r => r.stdout.trim(), () => '')
   const runnable = await $.process.run(['test', '-x', script]).then(r => r.exitCode === 0, () => false)
-  if (!stale.length && current === DESKTOP && runnable) return
-  for (const path of stale) await $.fs.write(path, want.get(path) ?? '')
-  await run($, ['chmod', '755', script])
-  await run($, ['update-mime-database', `${h.dataHome}/mime`])
-  await $.process.run(['update-desktop-database', `${h.dataHome}/applications`]).catch(() => undefined)
-  await run($, ['xdg-mime', 'default', DESKTOP, MIME])
+  if (stale.length || current !== DESKTOP || !runnable) {
+    for (const path of stale) await $.fs.write(path, want.get(path) ?? '')
+    await run($, ['chmod', '755', script])
+    await run($, ['update-mime-database', `${h.dataHome}/mime`])
+    await $.process.run(['update-desktop-database', `${h.dataHome}/applications`]).catch(() => undefined)
+    await run($, ['xdg-mime', 'default', DESKTOP, MIME])
+  }
+  await warnIfNothingCopies($)
+}
+
+// What copy.sh can copy with, checked the way copy.sh tries it: a clipboard
+// tool, else Python with ctypes and libX11 for clip.py.
+const CAN_COPY = [
+  'command -v wl-copy || command -v xclip || command -v xsel ||',
+  'python3 -c "import ctypes, ctypes.util, sys; sys.exit(0 if ctypes.util.find_library(\'X11\') else 1)"',
+].join(' ')
+const INSTALLERS: [string, string][] = [
+  ['apt-get', 'sudo apt install xclip'],
+  ['dnf', 'sudo dnf install xclip'],
+  ['pacman', 'sudo pacman -S xclip'],
+  ['zypper', 'sudo zypper install xclip'],
+]
+
+// The one notice this mod ever shows: a click would copy nothing, so say so
+// once per session, with the command for this system.
+async function warnIfNothingCopies($: Host): Promise<void> {
+  if ((await $.process.run(['sh', '-c', CAN_COPY])).exitCode === 0) return
+  let how = 'install xclip (X11) or wl-clipboard (Wayland)'
+  for (const [tool, command] of INSTALLERS)
+    if ((await $.process.run(['sh', '-c', `command -v ${tool}`])).exitCode === 0) {
+      how = `run: ${command}`
+      break
+    }
+  $.ui.log(`copy-button: nothing on this system can copy to the clipboard; to make the copy links work, ${how}`)
 }
 
 const install = ($: Host, h: Home) => (h.kind === 'wsl' ? installWsl($, h) : installLinux($, h))
