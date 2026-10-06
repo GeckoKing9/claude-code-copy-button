@@ -1,0 +1,19 @@
+{
+  "name": "copy-button",
+  "version": "0.3.0",
+  "description": "Ctrl+click copy link on every code block in Claude's replies (WSL + Windows Terminal)",
+  "author": {
+    "name": "GeckoKing9"
+  },
+  "homepage": "https://github.com/GeckoKing9/claude-code-copy-button",
+  "repository": "https://github.com/GeckoKing9/claude-code-copy-button",
+  "license": "MIT",
+  "keywords": [
+    "claude-code",
+    "claude-mod",
+    "copy",
+    "clipboard",
+    "wsl",
+    "windows-terminal"
+  ]
+}
