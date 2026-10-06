@@ -1,15 +1,15 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
   "name": "copy-button",
-  "description": "copy-button: Ctrl+click copy for code blocks in Claude Code (WSL + Windows Terminal)",
+  "description": "copy-button: Ctrl+click copy for code blocks in Claude Code (WSL + Windows Terminal, Linux)",
   "owner": {
     "name": "GeckoKing9"
   },
   "plugins": [
     {
       "name": "copy-button",
-      "description": "Ctrl+click copy link on every code block in Claude's replies (WSL + Windows Terminal)",
-      "version": "0.4.1",
+      "description": "Ctrl+click copy link on every code block in Claude's replies (normal mode; WSL + Windows Terminal, Linux desktops)",
+      "version": "0.5.0",
       "author": {
         "name": "GeckoKing9"
       },
@@ -21,7 +21,8 @@
         "copy",
         "clipboard",
         "wsl",
-        "windows-terminal"
+        "windows-terminal",
+        "linux"
       ]
     }
   ]

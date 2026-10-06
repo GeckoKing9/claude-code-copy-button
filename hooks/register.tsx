@@ -1,15 +1,17 @@
 import type { EngineInterface, Register } from 'claude-code'
 
 // A boxed "⧉ copy" link on every fenced code block in Claude's replies, for
-// Claude Code in WSL shown in Windows Terminal with the classic renderer.
-// See ../README.md for the moving parts and how to uninstall.
+// Claude Code in the classic renderer: in WSL shown in Windows Terminal, or on
+// a Linux desktop. See ../README.md for the moving parts and how to uninstall.
 //
-// The classic renderer has no click events; the one click there is Windows
-// Terminal's own Ctrl+click on a link. Each block is saved to
-// %LOCALAPPDATA%\claude-copy\<session>\<hash>.ccopy and linked; the .ccopy
-// file type (HKCU) runs copy.vbs silently, which puts the file's text on the
-// clipboard. .ccopy, unlike .vbs, is not in PATHEXT, so Windows Terminal opens
-// it without its "unsafe link" dialog.
+// The classic renderer has no click events; the one click there is the
+// terminal's own Ctrl+click on a link. Each block is saved to a .ccopy file
+// and linked, and the .ccopy file type copies the file's text:
+// - WSL: %LOCALAPPDATA%\claude-copy\<session>\<hash>.ccopy; the file type
+//   (HKCU) runs copy.vbs silently. .ccopy, unlike .vbs, is not in PATHEXT, so
+//   Windows Terminal opens it without its "unsafe link" dialog.
+// - Linux: $XDG_DATA_HOME/claude-copy/<session>/<hash>.ccopy; a shared-mime
+//   type and a hidden .desktop entry run copy.sh (wl-copy, xclip or xsel).
 //
 // The engine still draws the prose (bullet, indent, markdown); this hook only
 // cuts the reply at its code blocks and draws a box around each one. Classic
@@ -19,19 +21,26 @@ import type { EngineInterface, Register } from 'claude-code'
 // Drawing never runs anything: the engine refuses side effects there. All
 // work (finding the Windows folder, the file type, writing blocks, pruning)
 // runs in a background queue, one task at a time, each failure on its own.
-// Until the folder is known, replies are drawn as the engine draws them, and
-// a redraw follows once it is. Off WSL nothing is drawn or run.
+// A reply drawn while the folder is being looked up waits for it (up to
+// LOOKUP_WAIT_MS): the classic renderer cannot redraw a finished reply. Anywhere else (no Windows side and no Linux
+// display: macOS, a plain SSH session) nothing is drawn or run.
 
 const KEEP_MS = 2 * 86_400_000
 const STAMP_EVERY_MS = 10 * 60_000
 const PRUNE_EVERY_MS = 60 * 60_000
 const RETRY_MS = 5 * 60_000
-const STORE_KEY = 'home.v2'
+const LOOKUP_WAIT_MS = 2_000
+const STORE_KEY = 'home.v3'
+const MIME = 'application/x-claude-copy'
+const DESKTOP = 'claude-copy.desktop'
 const CLASSES = 'HKCU\\Software\\Classes'
 const LINK_WIDTH = 6
+// The link's icon: Windows Terminal's fonts have ⧉; Linux's default monospace
+// (DejaVu Sans Mono) has ❐ but not ⧉, which it draws as an empty box.
+const ICON = { wsl: '⧉', linux: '❐' } as const
 const GUTTER = 2
 
-type Host = Pick<EngineInterface, 'env' | 'fs' | 'plugin' | 'process' | 'session' | 'store' | 'ui'>
+type Host = Pick<EngineInterface, 'clock' | 'env' | 'fs' | 'plugin' | 'process' | 'session' | 'store' | 'ui'>
 
 type Code = { kind: 'code'; lang: string; body: string; raw: string }
 type Segment = { kind: 'prose'; text: string } | Code
@@ -125,25 +134,29 @@ const textOf = (content: unknown): string =>
 
 // ---- Where the files live --------------------------------------------------
 
-// %LOCALAPPDATA%\claude-copy as a Linux path (to write), a Windows path (for
-// the registry) and a file: URL (to link), plus %SystemRoot%.
-type Home = { dir: string; win: string; url: string; systemRoot: string }
+// WSL: %LOCALAPPDATA%\claude-copy as a Linux path (to write), a Windows path
+// (for the registry) and a file: URL (to link), plus %SystemRoot%.
+// Linux: $XDG_DATA_HOME/claude-copy and its file: URL.
+type Home = { kind: 'wsl'; dir: string; win: string; url: string; systemRoot: string } | { kind: 'linux'; dir: string; url: string; dataHome: string }
 
 // A file: URL path segment that is also a valid markdown link destination.
-// Only ASCII that would break either is escaped; non-ASCII stays literal,
-// because Windows decodes %XX in file: URLs with the ANSI code page, so a
-// UTF-8 escape of "é" names a different folder.
-const urlSegment = (s: string) => s.replace(/[\x00-\x20"#%'()<>?[\\\]^`{|}\x7f]/g, c => `%${c.charCodeAt(0).toString(16).toUpperCase().padStart(2, '0')}`)
-const fileUrl = (win: string) => {
+// Windows decodes %XX in file: URLs with the ANSI code page, so a UTF-8
+// escape of "é" names a different folder there: only ASCII that would break
+// the URL or the markdown is escaped and non-ASCII stays literal. Linux reads
+// %XX as UTF-8, so everything outside unreserved ASCII is escaped.
+const escape = (c: string) => `%${c.charCodeAt(0).toString(16).toUpperCase().padStart(2, '0')}`
+const winSegment = (s: string) => s.replace(/[\x00-\x20"#%'()<>?[\\\]^`{|}\x7f]/g, escape)
+const linuxSegment = (s: string) => encodeURIComponent(s).replace(/[!'()*]/g, escape)
+const winUrl = (win: string) => {
   const [drive = '', ...rest] = win.split('\\')
-  return `file:///${drive}/${rest.map(urlSegment).join('/')}`
+  return `file:///${drive}/${rest.map(winSegment).join('/')}`
 }
+const linuxUrl = (dir: string) => `file://${dir.split('/').map(linuxSegment).join('/')}`
+const urlSegment = (h: Home, s: string) => (h.kind === 'wsl' ? winSegment(s) : linuxSegment(s))
 
-async function locate($: Host): Promise<Home | null> {
-  // Not WSL: there is no Windows side to copy through. Settled for good.
-  if (!(await $.env.get('WSL_DISTRO_NAME')) && !(await $.env.get('WSL_INTEROP'))) return null
+async function locateWsl($: Host): Promise<Home> {
   const kept = (await $.store.get(STORE_KEY)) as Home | undefined
-  if (kept?.dir && kept.systemRoot) return kept
+  if (kept?.kind === 'wsl' && kept.dir && kept.systemRoot) return kept
   // chcp 65001: the paths come back as UTF-8 whatever the user's name is.
   const r = await $.process.run(['cmd.exe', '/d', '/c', 'chcp 65001 >nul & echo %LOCALAPPDATA%& echo %SystemRoot%'], { cwd: '/mnt/c' })
   const [local = '', systemRoot = ''] = r.stdout.split(/\r?\n/).map(l => l.trim())
@@ -152,13 +165,49 @@ async function locate($: Host): Promise<Home | null> {
   const w = await $.process.run(['wslpath', '-u', win])
   const dir = w.stdout.trim()
   if (w.exitCode !== 0 || !dir.startsWith('/')) throw new Error(`wslpath ${win}: ${w.stderr}`)
-  const home = { dir, win, url: fileUrl(win), systemRoot }
+  const home: Home = { kind: 'wsl', dir, win, url: winUrl(win), systemRoot }
   await $.store.set(STORE_KEY, home)
   return home
 }
 
-// What drawing reads: undefined until looked up, null off WSL.
+async function locateLinux($: Host): Promise<Home | null> {
+  const kept = (await $.store.get(STORE_KEY)) as Home | undefined
+  if (kept?.kind === 'linux' && kept.dir) return kept
+  const r = await $.process.run(['uname', '-s'])
+  if (r.stdout.trim() !== 'Linux') return null // macOS and others: not yet
+  const user = await $.env.get('HOME')
+  if (!user?.startsWith('/')) return null
+  // The XDG spec: a relative XDG_DATA_HOME is invalid and ignored.
+  const xdg = (await $.env.get('XDG_DATA_HOME'))?.replace(/\/+$/, '')
+  const dataHome = xdg?.startsWith('/') ? xdg : `${user}/.local/share`
+  const dir = `${dataHome}/claude-copy`
+  const home: Home = { kind: 'linux', dir, url: linuxUrl(dir), dataHome }
+  await $.store.set(STORE_KEY, home)
+  return home
+}
+
+// Which side this session copies through, from the environment alone, so
+// drawing may ask too. A forwarded display (ssh -X, a container) is not
+// the screen the user clicks on: the links would name the remote machine.
+async function platformOf($: Host): Promise<Home['kind'] | null> {
+  if ((await $.env.get('WSL_DISTRO_NAME')) || (await $.env.get('WSL_INTEROP'))) return 'wsl'
+  if ((await $.env.get('SSH_CONNECTION')) || (await $.env.get('SSH_TTY'))) return null
+  if (!(await $.env.get('DISPLAY')) && !(await $.env.get('WAYLAND_DISPLAY'))) return null
+  return 'linux'
+}
+
+async function locate($: Host): Promise<Home | null> {
+  const platform = await platformOf($)
+  if (platform === 'wsl') return locateWsl($)
+  if (platform === 'linux') return locateLinux($)
+  return null
+}
+
+// What drawing reads: undefined until looked up, null where the mod stays out;
+// `lookup` is the lookup in flight, which drawing may wait on but never starts.
+// Before that, drawing falls back on the folder a past session kept.
 let known: Home | null | undefined
+let lookup: Promise<Home | null> | undefined
 let failedAt = 0
 
 async function getHome($: Host): Promise<Home | null> {
@@ -166,14 +215,31 @@ async function getHome($: Host): Promise<Home | null> {
   // On WSL a failed lookup (interop off, cmd.exe missing) is retried, not
   // hammered: once per RETRY_MS at most.
   if (Date.now() - failedAt < RETRY_MS) return null
-  try {
-    known = await locate($)
-  } catch (err) {
-    failedAt = Date.now()
-    throw err
-  }
-  if (known) $.ui.invalidate('ui.render')
-  return known
+  lookup ??= locate($)
+    .then(
+      h => {
+        known = h
+        if (h) $.ui.invalidate('ui.render')
+        return h
+      },
+      err => {
+        failedAt = Date.now()
+        throw err
+      },
+    )
+    .finally(() => {
+      lookup = undefined
+    })
+  return lookup
+}
+
+// For a reply drawn before the folder is known: wait on the lookup in flight
+// (up to LOOKUP_WAIT_MS), or, before one has started (a resumed session draws
+// early), take the folder a past session kept. Reads only: drawing runs nothing.
+async function homeWhileDrawing($: Host, signal: AbortSignal): Promise<Home | null> {
+  if (lookup) return Promise.race([lookup.catch(() => null), $.clock.sleep(LOOKUP_WAIT_MS, { signal }).then(() => null, () => null)])
+  const kept = (await $.store.get(STORE_KEY).catch(() => undefined)) as Home | undefined
+  return kept && kept.kind === (await platformOf($)) ? kept : null
 }
 
 const log = ($: Host, what: string, err: unknown) => $.ui.log(`copy-button: ${what}: ${err instanceof Error ? err.message : String(err)}`, { to: 'debug' })
@@ -190,8 +256,10 @@ const later = ($: Host, what: string, task: (h: Home) => Promise<void>) => {
     .catch(err => log($, what, err))
 }
 
-const run = async ($: Host, argv: string[]) => {
-  const r = await $.process.run(argv, { cwd: '/mnt/c' })
+// Windows programs run from /mnt/c: a Linux working directory makes cmd.exe
+// and reg.exe warn about UNC paths.
+const run = async ($: Host, argv: string[], cwd?: string) => {
+  const r = await $.process.run(argv, cwd ? { cwd } : {})
   if (r.exitCode !== 0) throw new Error(`${argv.slice(0, 3).join(' ')}: exit ${r.exitCode} ${r.stderr.trim()}`)
   return r.stdout
 }
@@ -200,7 +268,7 @@ const run = async ($: Host, argv: string[]) => {
 // actually there each session, so a removed or stale entry heals itself. The
 // check reads an ASCII signature of the command, never the command itself:
 // reg.exe prints in the console code page, which mangles non-ASCII paths.
-async function install($: Host, h: Home): Promise<void> {
+async function installWsl($: Host, h: Extract<Home, { kind: 'wsl' }>): Promise<void> {
   const vbs = await $.fs.read(`${$.plugin.root}/windows/copy.vbs`)
   if ((await $.fs.read(`${h.dir}/copy.vbs`).catch(() => '')) !== vbs) await $.fs.write(`${h.dir}/copy.vbs`, vbs)
   // %L: the long path, so copy.vbs compares like with like.
@@ -211,11 +279,65 @@ async function install($: Host, h: Home): Promise<void> {
   if (ext.includes('ClaudeCopy') && sig.includes(signature)) return
   // Arguments, not a .reg file: WSL hands them to reg.exe as UTF-16, so a
   // non-ASCII user name survives.
-  await run($, ['reg.exe', 'add', `${CLASSES}\\ClaudeCopy\\shell\\open\\command`, '/ve', '/d', command, '/f'])
-  await run($, ['reg.exe', 'add', `${CLASSES}\\ClaudeCopy`, '/ve', '/d', 'Claude Code block', '/f'])
-  await run($, ['reg.exe', 'add', `${CLASSES}\\.ccopy`, '/ve', '/d', 'ClaudeCopy', '/f'])
-  await run($, ['reg.exe', 'add', `${CLASSES}\\ClaudeCopy`, '/v', 'Signature', '/d', signature, '/f'])
+  await run($, ['reg.exe', 'add', `${CLASSES}\\ClaudeCopy\\shell\\open\\command`, '/ve', '/d', command, '/f'], '/mnt/c')
+  await run($, ['reg.exe', 'add', `${CLASSES}\\ClaudeCopy`, '/ve', '/d', 'Claude Code block', '/f'], '/mnt/c')
+  await run($, ['reg.exe', 'add', `${CLASSES}\\.ccopy`, '/ve', '/d', 'ClaudeCopy', '/f'], '/mnt/c')
+  await run($, ['reg.exe', 'add', `${CLASSES}\\ClaudeCopy`, '/v', 'Signature', '/d', signature, '/f'], '/mnt/c')
 }
+
+// A path in a .desktop Exec line: double-quoted, with the characters the
+// spec reserves escaped, and % doubled.
+const execArg = (path: string) =>
+  `"${path.replace(/["`$\\]/g, c => `\\${c}`)}"`
+    // then the key-file string escape over the whole value: \ is written \\
+    .replace(/\\/g, '\\\\')
+    .replace(/%/g, '%%')
+
+// The freedesktop way: a shared-mime type for *.ccopy, a hidden .desktop entry
+// that runs copy.sh on the file, and that entry as the type's default app,
+// all under the user's own data and config folders. Checked each session
+// like the Windows side: a file that differs, or another default, is redone.
+async function installLinux($: Host, h: Extract<Home, { kind: 'linux' }>): Promise<void> {
+  const script = `${h.dir}/copy.sh`
+  const want = new Map([
+    [script, await $.fs.read(`${$.plugin.root}/linux/copy.sh`)],
+    [
+      `${h.dataHome}/mime/packages/claude-copy.xml`,
+      `<?xml version="1.0" encoding="UTF-8"?>
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="${MIME}">
+    <comment>Claude Code block</comment>
+    <glob pattern="*.ccopy" weight="90"/>
+  </mime-type>
+</mime-info>
+`,
+    ],
+    [
+      `${h.dataHome}/applications/${DESKTOP}`,
+      `[Desktop Entry]
+Type=Application
+Name=Claude Code copy button
+Comment=Copies a Claude Code block to the clipboard
+Exec=${execArg(script)} %f
+MimeType=${MIME};
+NoDisplay=true
+Terminal=false
+`,
+    ],
+  ])
+  const stale: string[] = []
+  for (const [path, text] of want) if ((await $.fs.read(path).catch(() => '')) !== text) stale.push(path)
+  const current = await $.process.run(['xdg-mime', 'query', 'default', MIME]).then(r => r.stdout.trim(), () => '')
+  const runnable = await $.process.run(['test', '-x', script]).then(r => r.exitCode === 0, () => false)
+  if (!stale.length && current === DESKTOP && runnable) return
+  for (const path of stale) await $.fs.write(path, want.get(path) ?? '')
+  await run($, ['chmod', '755', script])
+  await run($, ['update-mime-database', `${h.dataHome}/mime`])
+  await $.process.run(['update-desktop-database', `${h.dataHome}/applications`]).catch(() => undefined)
+  await run($, ['xdg-mime', 'default', DESKTOP, MIME])
+}
+
+const install = ($: Host, h: Home) => (h.kind === 'wsl' ? installWsl($, h) : installLinux($, h))
 
 const written = new Set<string>()
 
@@ -229,7 +351,7 @@ async function saveBlocks($: Host, h: Home, text: string): Promise<void> {
     const path = `${folder}/${hash(code.body)}.ccopy`
     if (written.has(path)) continue
     try {
-      await $.fs.write(path, code.body.replace(/\n/g, '\r\n'))
+      await $.fs.write(path, h.kind === 'wsl' ? code.body.replace(/\n/g, '\r\n') : code.body)
       written.add(path)
     } catch (err) {
       log($, `save ${path}`, err)
@@ -331,13 +453,13 @@ export const register: Register = on => {
     // Classic terminal only: the fullscreen renderer, desktop and IDE surfaces
     // have mouse handling of their own; a summary row is not the saved text.
     if (e.surface !== 'terminal' || e.viewport?.isFullscreen || e.props.isSummary) return next(e)
-    const where = known // (not named h: JSX compiles to the global h)
-    if (!where) return next(e)
     const segments = split(e.props.text)
     if (!segments.some(copyable)) return next(e)
+    const where = known ?? (await homeWhileDrawing($, next.signal)) // (not named h: JSX compiles to the global h)
+    if (!where) return next(e)
 
     const { Box, Text, Markdown } = $.ui.resolve(e)
-    const base = `${where.url}/${urlSegment(await $.session.id())}`
+    const base = `${where.url}/${urlSegment(where, await $.session.id())}`
     // Laid out as the engine lays out a reply: the bullet on the first piece,
     // every other piece under it (GUTTER), a blank line between pieces. The
     // engine's own drawing of a piece brings its blank line; a box adds one.
@@ -362,7 +484,7 @@ export const register: Register = on => {
           <Box flexDirection="row" justifyContent="space-between">
             <Text dimColor>{code.lang || 'text'}</Text>
             <Box width={LINK_WIDTH} height={1} overflow="hidden">
-              <Markdown text={`[⧉ copy](${base}/${hash(code.body)}.ccopy)`} />
+              <Markdown text={`[${ICON[where.kind]} copy](${base}/${hash(code.body)}.ccopy)`} />
             </Box>
           </Box>
           <Markdown text={code.raw} />
