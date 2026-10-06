@@ -37,7 +37,8 @@ active right away. Needs Claude Code 2.1.287 or later (the version that added
 mods).
 
 On Linux you also need a clipboard tool: `xclip` (X11) or `wl-clipboard`
-(Wayland), from your package manager.
+(Wayland), from your package manager. Desktops already ship the other two
+pieces it uses, `xdg-utils` and `shared-mime-info`.
 
 If Claude Code opens fullscreen for you (newer installs can), switch to normal
 mode with `/tui default`. In fullscreen the mod steps aside.
@@ -50,12 +51,13 @@ mode with `/tui default`. In fullscreen the mod steps aside.
 | Linux, X11 (tested: Xubuntu 24.04, xfce4-terminal, xclip) | Yes. Tested with a real Ctrl+click. |
 | Linux, Wayland (wl-clipboard) | Should work, same handler. Not tested yet. |
 | Other Linux terminals (GNOME Terminal, Konsole, kitty...) | Should work if the terminal opens `file:` links on Ctrl+click. Only xfce4-terminal is tested. |
+| Bare window managers (i3, sway...) | Probably not: there `xdg-open` guesses the file type from its content, so the click opens the block in a text editor. |
+| SSH sessions, including `ssh -X` | No, on purpose: the links would point at the remote machine. |
 | Fullscreen renderer | No. The mod steps aside and the reply is drawn as usual. |
 | VS Code terminal, other Windows terminals | No. They open `file:` links their own way. |
 | macOS | Not yet. The mod draws nothing and runs nothing. |
 
-A Linux session with no display (plain SSH) is left alone too. macOS would
-need its own click handler (a file type that runs `pbcopy`). Happy to take a
+macOS would need its own click handler (a file type that runs `pbcopy`). Happy to take a
 PR from someone who can test it on a real Mac.
 
 ## How it works
@@ -104,8 +106,9 @@ Read this before installing anything that runs scripts, including this.
   session folders.
 
 **Both**
-- Checked each session and repaired if something removed it. All in the
-  background, never while Claude Code is drawing or waiting.
+- Checked each session and repaired if something removed it. All of it runs
+  in the background; drawing only ever waits (up to 2 seconds) for the mod to
+  find its folder at the start of a session.
 - **Network:** none.
 
 The handler (`windows/copy.vbs`, `linux/copy.sh`) only copies `.ccopy` files
@@ -132,9 +135,10 @@ your machine the click stops working until the script is replaced.
    Linux:
 
    ```
-   rm -rf ~/.local/share/claude-copy ~/.local/share/applications/claude-copy.desktop ~/.local/share/mime/packages/claude-copy.xml
-   update-mime-database ~/.local/share/mime
-   sed -i '/x-claude-copy/d' ~/.config/mimeapps.list
+   d=${XDG_DATA_HOME:-$HOME/.local/share}
+   rm -rf "$d/claude-copy" "$d/applications/claude-copy.desktop" "$d/mime/packages/claude-copy.xml"
+   update-mime-database "$d/mime"
+   sed -i '/x-claude-copy/d' "${XDG_CONFIG_HOME:-$HOME/.config}/mimeapps.list"
    ```
 
 ## Known limits

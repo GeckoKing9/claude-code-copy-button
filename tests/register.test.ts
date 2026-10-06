@@ -8,17 +8,18 @@ const URL = 'file:///C:/Users/Jöhn%20Smith%20%28x%29/AppData/Local/claude-copy/
 const REPLY = 'First line.\n\n```bash\necho hi\n```\n\nLast line.'
 const CLASSES = 'HKCU\\Software\\Classes'
 
-type Opts = { gate?: Promise<void>; wsl?: boolean; linux?: { uname?: string; env?: Record<string, string> }; registry?: 'missing' | 'current'; replies?: string[]; failRegAdd?: boolean; failWrite?: (path: string) => boolean }
+type Opts = { stored?: Record<string, unknown>; gate?: Promise<void>; wsl?: boolean; linux?: { uname?: string; env?: Record<string, string> }; registry?: 'missing' | 'current'; replies?: string[]; failRegAdd?: boolean; failWrite?: (path: string) => boolean }
 
 const result = (exitCode: number, stdout = '') => ({ value: { exitCode, stdout, stderr: exitCode ? 'failed' : '', isStdoutTruncated: false, isStderrTruncated: false } })
 
 // The world beneath the mod: WSL or not, Windows, a file system in memory, the
 // registry, and the engine's stock drawing (which echoes what it was asked).
-const world = (on: On, { gate, wsl = true, linux, registry = 'missing', replies = [], failRegAdd = false, failWrite = () => false }: Opts = {}) => {
-  mock.store(on)
-  mock.clock(on)
-  mock.env(on, linux ? { DISPLAY: ':0', HOME: '/home/Jöhn Smith', ...linux.env } : wsl ? { WSL_DISTRO_NAME: 'Ubuntu' } : {})
+const world = (on: On, { stored, gate, wsl = true, linux, registry = 'missing', replies = [], failRegAdd = false, failWrite = () => false }: Opts = {}) => {
+  mock.store(on, stored)
+  const clock = mock.clock(on)
+  mock.env(on, linux ? { HOME: '/home/Jöhn Smith', ...(linux.env ?? { DISPLAY: ':0' }) } : wsl ? { WSL_DISTRO_NAME: 'Ubuntu' } : {})
   let xdgDefault = ''
+  let executable = false
   const runs: string[][] = []
   const files = new Map<string, string>()
   const reg = new Map<string, string>()
@@ -27,6 +28,8 @@ const world = (on: On, { gate, wsl = true, linux, registry = 'missing', replies 
     runs.push(argv)
     if (gate && (argv[0] === 'cmd.exe' || argv[0] === 'uname')) await gate
     if (argv[0] === 'uname') return result(0, `${linux?.uname ?? 'Linux'}\n`)
+    if (argv[0] === 'test') return result(executable ? 0 : 1)
+    if (argv[0] === 'chmod') executable = true
     if (argv[0] === 'xdg-mime' && argv[1] === 'query') return result(0, xdgDefault ? `${xdgDefault}\n` : '')
     if (argv[0] === 'xdg-mime' && argv[1] === 'default') {
       xdgDefault = argv[2] ?? ''
@@ -65,7 +68,7 @@ const world = (on: On, { gate, wsl = true, linux, registry = 'missing', replies 
   })
   const adds = () => runs.filter(r => r[0] === 'reg.exe' && r[1] === 'add')
   const saved = () => [...files.entries()].filter(([p]) => p.endsWith('.ccopy'))
-  return { runs, files, reg, asked, adds, saved }
+  return { runs, files, reg, asked, adds, saved, clock, lose: () => (executable = false) }
 }
 
 const message = (text: string, extra: Record<string, unknown> = {}, surface: 'terminal' | 'desktop' = 'terminal') => ({
@@ -209,7 +212,7 @@ test('linux: the file type is installed once, as the default app, with a quoted 
 })
 
 test('linux: XDG_DATA_HOME is where everything goes', async ($, on) => {
-  const w = world(on, { linux: { env: { XDG_DATA_HOME: '/data/' } } })
+  const w = world(on, { linux: { env: { DISPLAY: ':0', XDG_DATA_HOME: '/data/' } } })
   await started($)
   expect(w.files.get('/data/claude-copy/copy.sh')).toBe('SH')
   expect([...w.files.keys()].every(p => p.startsWith('/data/'))).toBe(true)
@@ -234,4 +237,54 @@ test('a reply drawn while the folder is being looked up waits for it', async ($,
   await settle()
   open()
   expect(flat(await drawing)).toContain('.ccopy)')
+})
+
+test('linux: a lost run permission on copy.sh is put back next session', async ($, on) => {
+  const w = world(on, { linux: {} })
+  await started($)
+  w.lose()
+  await started($)
+  expect(w.runs.filter(r => r[0] === 'chmod').length).toBe(2)
+})
+
+test('linux: a Wayland-only session is a Linux desktop', async ($, on) => {
+  const w = world(on, { linux: { env: { WAYLAND_DISPLAY: 'wayland-0' } }, replies: [REPLY] })
+  await started($)
+  expect(w.saved().length).toBe(1)
+})
+
+test('linux: a forwarded display (ssh -X) is left alone', async ($, on) => {
+  const w = world(on, { linux: { env: { DISPLAY: 'localhost:10.0', SSH_CONNECTION: '10.0.0.2 5000 10.0.0.9 22' } }, replies: [REPLY] })
+  await started($)
+  expect(flat(await $.ui.render(message(REPLY)))).toBe(stock(REPLY))
+  expect(w.runs).toEqual([])
+})
+
+test('linux: a relative XDG_DATA_HOME is ignored, as the spec says', async ($, on) => {
+  const w = world(on, { linux: { env: { DISPLAY: ':0', XDG_DATA_HOME: 'data' } } })
+  await started($)
+  expect(w.files.get(`${LINUX_DIR}/copy.sh`)).toBe('SH')
+})
+
+test('linux: Exec escapes $, quotes and backslashes twice and doubles %', async ($, on) => {
+  const w = world(on, { linux: { env: { DISPLAY: ':0', XDG_DATA_HOME: '/d/a$b"c\\d%e' } } })
+  await started($)
+  expect(w.files.get('/d/a$b"c\\d%e/applications/claude-copy.desktop')).toContain('Exec="/d/a\\\\$b\\\\"c\\\\\\\\d%%e/claude-copy/copy.sh" %f')
+})
+
+test('a lookup slower than the wait leaves that one reply to the engine', async ($, on) => {
+  const gate = new Promise<void>(() => {})
+  const w = world(on, { gate })
+  await $.session.start(session)
+  await settle()
+  const drawing = $.ui.render(message(REPLY))
+  await settle()
+  await w.clock.advance(2_000)
+  expect(flat(await drawing)).toBe(stock(REPLY))
+})
+
+test('a resumed session drawing before the lookup uses the folder a past session kept', async ($, on) => {
+  const kept = { kind: 'wsl', dir: DIR, win: `${LOCAL}\\claude-copy`, url: 'file:///C:/kept', systemRoot: 'C:\\WINDOWS' }
+  world(on, { stored: { 'home.v3': kept } })
+  expect(flat(await $.ui.render(message(REPLY)))).toContain('(file:///C:/kept/sess-1/')
 })

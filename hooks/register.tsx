@@ -40,7 +40,7 @@ const LINK_WIDTH = 6
 const ICON = { wsl: '⧉', linux: '❐' } as const
 const GUTTER = 2
 
-type Host = Pick<EngineInterface, 'env' | 'fs' | 'plugin' | 'process' | 'session' | 'store' | 'ui'>
+type Host = Pick<EngineInterface, 'clock' | 'env' | 'fs' | 'plugin' | 'process' | 'session' | 'store' | 'ui'>
 
 type Code = { kind: 'code'; lang: string; body: string; raw: string }
 type Segment = { kind: 'prose'; text: string } | Code
@@ -171,24 +171,41 @@ async function locateWsl($: Host): Promise<Home> {
 }
 
 async function locateLinux($: Host): Promise<Home | null> {
+  const kept = (await $.store.get(STORE_KEY)) as Home | undefined
+  if (kept?.kind === 'linux' && kept.dir) return kept
   const r = await $.process.run(['uname', '-s'])
   if (r.stdout.trim() !== 'Linux') return null // macOS and others: not yet
   const user = await $.env.get('HOME')
   if (!user?.startsWith('/')) return null
-  const dataHome = (await $.env.get('XDG_DATA_HOME'))?.replace(/\/+$/, '') || `${user}/.local/share`
+  // The XDG spec: a relative XDG_DATA_HOME is invalid and ignored.
+  const xdg = (await $.env.get('XDG_DATA_HOME'))?.replace(/\/+$/, '')
+  const dataHome = xdg?.startsWith('/') ? xdg : `${user}/.local/share`
   const dir = `${dataHome}/claude-copy`
-  return { kind: 'linux', dir, url: linuxUrl(dir), dataHome }
+  const home: Home = { kind: 'linux', dir, url: linuxUrl(dir), dataHome }
+  await $.store.set(STORE_KEY, home)
+  return home
+}
+
+// Which side this session copies through, from the environment alone, so
+// drawing may ask too. A forwarded display (ssh -X, a container) is not
+// the screen the user clicks on: the links would name the remote machine.
+async function platformOf($: Host): Promise<Home['kind'] | null> {
+  if ((await $.env.get('WSL_DISTRO_NAME')) || (await $.env.get('WSL_INTEROP'))) return 'wsl'
+  if ((await $.env.get('SSH_CONNECTION')) || (await $.env.get('SSH_TTY'))) return null
+  if (!(await $.env.get('DISPLAY')) && !(await $.env.get('WAYLAND_DISPLAY'))) return null
+  return 'linux'
 }
 
 async function locate($: Host): Promise<Home | null> {
-  if ((await $.env.get('WSL_DISTRO_NAME')) || (await $.env.get('WSL_INTEROP'))) return locateWsl($)
-  // No display: nothing to click in (an SSH session), or not Linux. Settled for good.
-  if (!(await $.env.get('DISPLAY')) && !(await $.env.get('WAYLAND_DISPLAY'))) return null
-  return locateLinux($)
+  const platform = await platformOf($)
+  if (platform === 'wsl') return locateWsl($)
+  if (platform === 'linux') return locateLinux($)
+  return null
 }
 
 // What drawing reads: undefined until looked up, null where the mod stays out;
 // `lookup` is the lookup in flight, which drawing may wait on but never starts.
+// Before that, drawing falls back on the folder a past session kept.
 let known: Home | null | undefined
 let lookup: Promise<Home | null> | undefined
 let failedAt = 0
@@ -214,6 +231,15 @@ async function getHome($: Host): Promise<Home | null> {
       lookup = undefined
     })
   return lookup
+}
+
+// For a reply drawn before the folder is known: wait on the lookup in flight
+// (up to LOOKUP_WAIT_MS), or, before one has started (a resumed session draws
+// early), take the folder a past session kept. Reads only: drawing runs nothing.
+async function homeWhileDrawing($: Host, signal: AbortSignal): Promise<Home | null> {
+  if (lookup) return Promise.race([lookup.catch(() => null), $.clock.sleep(LOOKUP_WAIT_MS, { signal }).then(() => null, () => null)])
+  const kept = (await $.store.get(STORE_KEY).catch(() => undefined)) as Home | undefined
+  return kept && kept.kind === (await platformOf($)) ? kept : null
 }
 
 const log = ($: Host, what: string, err: unknown) => $.ui.log(`copy-button: ${what}: ${err instanceof Error ? err.message : String(err)}`, { to: 'debug' })
@@ -261,7 +287,11 @@ async function installWsl($: Host, h: Extract<Home, { kind: 'wsl' }>): Promise<v
 
 // A path in a .desktop Exec line: double-quoted, with the characters the
 // spec reserves escaped, and % doubled.
-const execArg = (path: string) => `"${path.replace(/["`$\\]/g, c => `\\${c}`).replace(/%/g, '%%')}"`
+const execArg = (path: string) =>
+  `"${path.replace(/["`$\\]/g, c => `\\${c}`)}"`
+    // then the key-file string escape over the whole value: \ is written \\
+    .replace(/\\/g, '\\\\')
+    .replace(/%/g, '%%')
 
 // The freedesktop way: a shared-mime type for *.ccopy, a hidden .desktop entry
 // that runs copy.sh on the file, and that entry as the type's default app,
@@ -298,7 +328,8 @@ Terminal=false
   const stale: string[] = []
   for (const [path, text] of want) if ((await $.fs.read(path).catch(() => '')) !== text) stale.push(path)
   const current = await $.process.run(['xdg-mime', 'query', 'default', MIME]).then(r => r.stdout.trim(), () => '')
-  if (!stale.length && current === DESKTOP) return
+  const runnable = await $.process.run(['test', '-x', script]).then(r => r.exitCode === 0, () => false)
+  if (!stale.length && current === DESKTOP && runnable) return
   for (const path of stale) await $.fs.write(path, want.get(path) ?? '')
   await run($, ['chmod', '755', script])
   await run($, ['update-mime-database', `${h.dataHome}/mime`])
@@ -422,12 +453,10 @@ export const register: Register = on => {
     // Classic terminal only: the fullscreen renderer, desktop and IDE surfaces
     // have mouse handling of their own; a summary row is not the saved text.
     if (e.surface !== 'terminal' || e.viewport?.isFullscreen || e.props.isSummary) return next(e)
-    // (not named h: JSX compiles to the global h)
-    const where =
-      known ?? (lookup && (await Promise.race([lookup.catch(() => null), $.clock.sleep(LOOKUP_WAIT_MS, { signal: next.signal }).then(() => null, () => null)])))
-    if (!where) return next(e)
     const segments = split(e.props.text)
     if (!segments.some(copyable)) return next(e)
+    const where = known ?? (await homeWhileDrawing($, next.signal)) // (not named h: JSX compiles to the global h)
+    if (!where) return next(e)
 
     const { Box, Text, Markdown } = $.ui.resolve(e)
     const base = `${where.url}/${urlSegment(where, await $.session.id())}`
