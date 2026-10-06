@@ -9,7 +9,7 @@
     {
       "name": "copy-button",
       "description": "Ctrl+click copy link on every code block in Claude's replies (normal mode; WSL + Windows Terminal, Linux desktops, nothing to install)",
-      "version": "0.6.0",
+      "version": "0.6.1",
       "author": {
         "name": "GeckoKing9"
       },

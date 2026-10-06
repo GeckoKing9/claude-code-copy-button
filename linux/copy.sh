@@ -2,6 +2,8 @@
 # Claude Code copy button (Linux): run through the .ccopy file type with the
 # path of a file holding one code block; puts that text on the clipboard with
 # wl-copy, xclip or xsel when installed, else with clip.py (libX11, no install).
+# It fills both places Linux pastes from: the clipboard (Ctrl+V, Ctrl+Shift+V)
+# and the primary selection (middle-click, Shift+Insert).
 # Only .ccopy files in this script's own folder are copied, so a stray .ccopy
 # file from anywhere else cannot replace the clipboard.
 #
@@ -35,9 +37,9 @@ case "$src" in
   *) exit 2 ;;
 esac
 case "$(backend)" in
-  wl-copy) exec wl-copy < "$src" ;;
-  xclip) exec xclip -selection clipboard -in < "$src" ;;
-  xsel) exec xsel --clipboard --input < "$src" ;;
+  wl-copy) wl-copy < "$src" && exec wl-copy --primary < "$src" ;;
+  xclip) xclip -selection clipboard -in < "$src" && exec xclip -selection primary -in < "$src" ;;
+  xsel) xsel --clipboard --input < "$src" && exec xsel --primary --input < "$src" ;;
   clip.py)
     python3 "$home/clip.py" "$src" && exit 0
     msg="Copying failed. Try the link again." ;;
