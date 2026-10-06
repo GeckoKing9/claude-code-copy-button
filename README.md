@@ -2,7 +2,7 @@
 
 **Ctrl+click to copy any code block in Claude Code.** One click, exact text,
 straight to your clipboard. Works in WSL with Windows Terminal, and on Linux
-desktops.
+desktops (X11 and Wayland) with nothing extra to install.
 
 ![Ctrl+clicking the copy link on a code block, then pasting it into the prompt](assets/demo.gif)
 
