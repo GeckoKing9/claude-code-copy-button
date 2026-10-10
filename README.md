@@ -169,6 +169,7 @@ your machine the click stops working until the script is replaced.
 git clone https://github.com/GeckoKing9/claude-code-copy-button
 claude --plugin-dir ./claude-code-copy-button
 claude plugin test ./claude-code-copy-button
+sh ./claude-code-copy-button/tests/copy.sh.test.sh
 ```
 
 MIT license.

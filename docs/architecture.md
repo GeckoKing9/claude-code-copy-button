@@ -51,6 +51,9 @@ a `file:` link to something that, when the operating system opens it, copies.
 
 - `claude plugin test .` runs `tests/register.test.ts` against the engine's
   test kit, with the platform (process, file system, registry, xdg) mocked.
+- `sh tests/copy.sh.test.sh` drives `linux/copy.sh` with fake clipboard tools
+  on PATH: the tool it picks, the own-folder refusal, the exact bytes each
+  tool is handed, and the failure notices. No display server needed.
 - Real behaviour is proven by hand on real systems: a recorded Claude Code
   session (rendered with pyte), a real or simulated click, and the clipboard
   read back. Linux runs used Xubuntu 24.04 (X11, xfce4-terminal), with and
