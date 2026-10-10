@@ -8,13 +8,13 @@ const URL = 'file:///C:/Users/Jöhn%20Smith%20%28x%29/AppData/Local/claude-copy/
 const REPLY = 'First line.\n\n```bash\necho hi\n```\n\nLast line.'
 const CLASSES = 'HKCU\\Software\\Classes'
 
-type Opts = { canCopy?: boolean; installer?: string; stored?: Record<string, unknown>; gate?: Promise<void>; wsl?: boolean; linux?: { uname?: string; env?: Record<string, string> }; registry?: 'missing' | 'current'; replies?: string[]; failRegAdd?: boolean; failWrite?: (path: string) => boolean }
+type Opts = { canCopy?: boolean; checkExit?: number; installer?: string; stored?: Record<string, unknown>; gate?: Promise<void>; wsl?: boolean; linux?: { uname?: string; env?: Record<string, string> }; registry?: 'missing' | 'current'; replies?: string[]; failRegAdd?: boolean; failWrite?: (path: string) => boolean }
 
 const result = (exitCode: number, stdout = '') => ({ value: { exitCode, stdout, stderr: exitCode ? 'failed' : '', isStdoutTruncated: false, isStderrTruncated: false } })
 
 // The world beneath the mod: WSL or not, Windows, a file system in memory, the
 // registry, and the engine's stock drawing (which echoes what it was asked).
-const world = (on: On, { canCopy = true, installer, stored, gate, wsl = true, linux, registry = 'missing', replies = [], failRegAdd = false, failWrite = () => false }: Opts = {}) => {
+const world = (on: On, { canCopy = true, checkExit, installer, stored, gate, wsl = true, linux, registry = 'missing', replies = [], failRegAdd = false, failWrite = () => false }: Opts = {}) => {
   mock.store(on, stored)
   const clock = mock.clock(on)
   mock.env(on, linux ? { HOME: '/home/Jöhn Smith', ...(linux.env ?? { DISPLAY: ':0' }) } : wsl ? { WSL_DISTRO_NAME: 'Ubuntu' } : {})
@@ -31,7 +31,10 @@ const world = (on: On, { canCopy = true, installer, stored, gate, wsl = true, li
     if (argv[0] === 'uname') return result(0, `${linux?.uname ?? 'Linux'}\n`)
     if (argv[0] === 'test') return result(executable ? 0 : 1)
     if (argv[0] === 'update-mime-database' && mimeBroken) return result(1)
-    if (argv[0] === 'sh' && argv[2] === '--check') return result(canCopy ? 0 : 3, canCopy ? 'xclip\n' : '')
+    if (argv[0] === 'sh' && argv[2] === '--check') {
+      const code = checkExit ?? (canCopy ? 0 : 3)
+      return result(code, code === 0 ? 'xclip\n' : '')
+    }
     if (argv[0] === 'sh' && argv[1] === '-c' && argv[2]?.startsWith('for t in')) return result(0, installer ? `${installer}\n` : '')
     if (argv[0] === 'chmod') executable = true
     if (argv[0] === 'xdg-mime' && argv[1] === 'query') return result(0, xdgDefault ? `${xdgDefault}\n` : '')
@@ -332,4 +335,12 @@ test('linux: the notice comes even when installing the file type failed', async 
   w.breakMime()
   await started($)
   expect(w.notices.length).toBe(1)
+})
+
+test('linux: a check that fails for a reason other than a missing tool gives no install advice', async ($, on) => {
+  // Exit 2: copy.sh itself could not run (not written, unreadable). That is an
+  // install problem for the debug log, not "nothing can copy".
+  const w = world(on, { linux: {}, checkExit: 2, installer: 'apt-get' })
+  await started($)
+  expect(w.notices).toEqual([])
 })

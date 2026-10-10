@@ -356,9 +356,14 @@ const WARNED_KEY = 'warned-session'
 
 // The one notice this mod ever shows: a click would copy nothing. copy.sh
 // answers that itself (--check runs the exact choice a click makes), so the
-// notice and the click cannot disagree. Once per session, reloads included.
+// notice and the click cannot disagree. Only its own answer counts: exit 3.
+// Any other failure (the script missing, unreadable) is an install problem,
+// and advice to install a tool would not fix it. Once per session, reloads
+// included.
 async function warnIfNothingCopies($: Host, h: Extract<Home, { kind: 'linux' }>): Promise<void> {
-  if ((await $.process.run(['sh', `${h.dir}/copy.sh`, '--check'])).exitCode === 0) return
+  const check = await $.process.run(['sh', `${h.dir}/copy.sh`, '--check'])
+  if (check.exitCode === 0) return
+  if (check.exitCode !== 3) throw new Error(`copy.sh --check: exit ${check.exitCode} ${check.stderr.trim()}`)
   const session = await $.session.id()
   if ((await $.store.get(WARNED_KEY)) === session) return
   await $.store.set(WARNED_KEY, session)
