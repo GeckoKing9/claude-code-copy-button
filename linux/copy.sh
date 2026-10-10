@@ -37,7 +37,11 @@ case "$src" in
   *) exit 2 ;;
 esac
 case "$(backend)" in
-  wl-copy) wl-copy < "$src" && exec wl-copy --primary < "$src" ;;
+  # --type: left to itself wl-copy sniffs the block with xdg-mime and adds the
+  # plain-text offers only when the sniffed type looks like text to it. A Perl,
+  # PHP or Ruby script or a certificate block sniffs as something else, and a
+  # terminal paste of it came back empty.
+  wl-copy) wl-copy --type text/plain < "$src" && exec wl-copy --type text/plain --primary < "$src" ;;
   xclip) xclip -selection clipboard -in < "$src" && exec xclip -selection primary -in < "$src" ;;
   xsel) xsel --clipboard --input < "$src" && exec xsel --primary --input < "$src" ;;
   clip.py)
