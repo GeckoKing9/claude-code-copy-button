@@ -17,6 +17,9 @@ s.LoadFromFile src : t = s.ReadText : s.Close
 Set o = CreateObject("ADODB.Stream") : o.Type = 2 : o.Charset = "unicode" : o.Open
 o.WriteText t : o.Position = 0 : o.Type = 1 : o.Position = 2 : d = o.Read : o.Close
 Set w = CreateObject("ADODB.Stream") : w.Type = 1 : w.Open : w.Write d : w.SaveToFile tmp, 2 : w.Close
+' cmd.exe and clip.exe by full path from the system folder, and cmd with /d,
+' so neither the working folder, PATH nor cmd's AutoRun key can swap them.
+sys = fso.GetSpecialFolder(1) & "\"
 On Error Resume Next
-CreateObject("WScript.Shell").Run "cmd /c clip < """ & tmp & """", 0, True
+CreateObject("WScript.Shell").Run """" & sys & "cmd.exe"" /d /c """"" & sys & "clip.exe"" < """ & tmp & """""", 0, True
 fso.DeleteFile tmp, True
