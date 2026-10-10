@@ -36,18 +36,24 @@ case "$src" in
   "$home"/*.ccopy) ;;
   *) exit 2 ;;
 esac
-case "$(backend)" in
-  # --type: left to itself wl-copy sniffs the block with xdg-mime and adds the
-  # plain-text offers only when the sniffed type looks like text to it. A Perl,
-  # PHP or Ruby script or a certificate block sniffs as something else, and a
-  # terminal paste of it came back empty.
-  wl-copy) wl-copy --type text/plain < "$src" && exec wl-copy --type text/plain --primary < "$src" ;;
-  xclip) xclip -selection clipboard -in < "$src" && exec xclip -selection primary -in < "$src" ;;
-  xsel) xsel --clipboard --input < "$src" && exec xsel --primary --input < "$src" ;;
-  clip.py)
-    python3 "$home/clip.py" "$src" && exit 0
-    msg="Copying failed. Try the link again." ;;
-  *) msg="Nothing here can copy to the clipboard. Install wl-clipboard (Wayland) or xclip (X11)." ;;
-esac
+if [ ! -f "$src" ]; then
+  # Session folders are deleted two days after their last use.
+  msg="This block's file is gone: old sessions are cleaned up after two days. Ask again and copy from the new reply."
+else
+  tool=$(backend)
+  case "$tool" in
+    # --type: left to itself wl-copy sniffs the block with xdg-mime and adds
+    # the plain-text offers only when the sniffed type looks like text to it.
+    # A Perl, PHP or Ruby script or a certificate block sniffs as something
+    # else, and a terminal paste of it came back empty.
+    wl-copy) wl-copy --type text/plain < "$src" && exec wl-copy --type text/plain --primary < "$src" ;;
+    xclip) xclip -selection clipboard -in < "$src" && exec xclip -selection primary -in < "$src" ;;
+    xsel) xsel --clipboard --input < "$src" && exec xsel --primary --input < "$src" ;;
+    clip.py) python3 "$home/clip.py" "$src" && exit 0 ;;
+    *) msg="Nothing here can copy to the clipboard. Install wl-clipboard (Wayland) or xclip (X11)." ;;
+  esac
+  # A tool that is there but failed: name it, rather than send a blank notice.
+  msg=${msg:-"Copying with $tool failed. Try the link again."}
+fi
 command -v notify-send >/dev/null 2>&1 && notify-send "Claude Code copy button" "$msg"
 exit 3
