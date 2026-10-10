@@ -196,11 +196,16 @@ class Owner:
 
     def convert_multiple(self, requestor, prop):
         """MULTIPLE (ICCCM 2.6.2): a list of (target, property) pairs on `prop`;
-        each one converted, and a pair that failed gets its property set to None."""
+        each one converted, and a pair that failed gets its property set to None.
+        The list must be 32-bit atoms of type ATOM_PAIR (or ATOM, as old clients
+        send); anything else is refused rather than read as if it were one."""
         x = self.x
         kind, fmt, n, after, items = Atom(), c_int(), c_ulong(), c_ulong(), c_void_p()
         if x.XGetWindowProperty(self.dpy, requestor, prop, 0, 0x7FFFFFFF, 0, ANY_PROPERTY_TYPE, byref(kind),
                                 byref(fmt), byref(n), byref(after), byref(items)) != 0 or not items.value:
+            return False
+        if fmt.value != 32 or kind.value not in (self.atom_pair, XA_ATOM):
+            x.XFree(items)
             return False
         pairs = list(ctypes.cast(items, POINTER(c_ulong * n.value)).contents)
         x.XFree(items)
