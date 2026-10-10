@@ -315,11 +315,15 @@ async function installLinux($: Host, h: Extract<Home, { kind: 'linux' }>): Promi
     ],
     [
       `${h.dataHome}/applications/${DESKTOP}`,
+      // sh runs the script so that its path is an argument, not argv[0]: GLib
+      // checks that argv[0] exists before it unescapes %%, so a % in the path
+      // would make the entry unloadable and every click do nothing. It also
+      // spares the exec bit.
       `[Desktop Entry]
 Type=Application
 Name=Claude Code copy button
 Comment=Copies a Claude Code block to the clipboard
-Exec=${execArg(script)} %f
+Exec=sh ${execArg(script)} %f
 MimeType=${MIME};
 NoDisplay=true
 Terminal=false

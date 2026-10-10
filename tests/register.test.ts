@@ -212,7 +212,7 @@ test('linux: the file type is installed once, as the default app, with a quoted 
   expect(w.files.get(`${LINUX_DIR}/clip.py`)).toBe('PY')
   expect(w.notices).toEqual([])
   expect(w.files.get('/home/Jöhn Smith/.local/share/mime/packages/claude-copy.xml')).toContain('<glob pattern="*.ccopy"')
-  expect(w.files.get('/home/Jöhn Smith/.local/share/applications/claude-copy.desktop')).toContain(`Exec="${LINUX_DIR}/copy.sh" %f`)
+  expect(w.files.get('/home/Jöhn Smith/.local/share/applications/claude-copy.desktop')).toContain(`Exec=sh "${LINUX_DIR}/copy.sh" %f`)
   const ran = (name: string) => w.runs.filter(r => r[0] === name).map(r => r.join(' '))
   expect(ran('chmod')).toEqual([`chmod 755 ${LINUX_DIR}/copy.sh`])
   expect(ran('xdg-mime').filter(r => r.startsWith('xdg-mime default '))).toEqual(['xdg-mime default claude-copy.desktop application/x-claude-copy'])
@@ -277,10 +277,12 @@ test('linux: a relative XDG_DATA_HOME is ignored, as the spec says', async ($, o
   expect(w.files.get(`${LINUX_DIR}/copy.sh`)).toBe('SH')
 })
 
-test('linux: Exec escapes $, quotes and backslashes twice and doubles %', async ($, on) => {
+test('linux: Exec runs the script through sh, escapes $, quotes and backslashes twice and doubles %', async ($, on) => {
   const w = world(on, { linux: { env: { DISPLAY: ':0', XDG_DATA_HOME: '/d/a$b"c\\d%e' } } })
   await started($)
-  expect(w.files.get('/d/a$b"c\\d%e/applications/claude-copy.desktop')).toContain('Exec="/d/a\\\\$b\\\\"c\\\\\\\\d%%e/claude-copy/copy.sh" %f')
+  // sh in front: GLib refuses an entry whose argv[0] has a % in it (it checks
+  // the path before unescaping %%), so the script must not be argv[0].
+  expect(w.files.get('/d/a$b"c\\d%e/applications/claude-copy.desktop')).toContain('Exec=sh "/d/a\\\\$b\\\\"c\\\\\\\\d%%e/claude-copy/copy.sh" %f')
 })
 
 test('a lookup slower than the wait leaves that one reply to the engine', async ($, on) => {
