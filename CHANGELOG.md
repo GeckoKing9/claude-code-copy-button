@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.6.2
+
+- Wayland: blocks that look like Perl, PHP, Ruby or a certificate paste
+  correctly (`wl-copy` is told the text is plain text).
+- Linux: a data folder path containing `%` no longer breaks every click.
+- Linux: `clip.py` refuses a malformed paste request instead of crashing and
+  losing the clipboard.
+- Linux: a failing clipboard tool is named in the notice, and a link whose
+  block was already pruned says so.
+- Linux: only a real "nothing can copy" result suggests installing a tool.
+- Windows: `copy.vbs` runs `cmd.exe` and `clip.exe` from System32 with
+  AutoRun off, so nothing in the working folder or PATH can stand in for them.
+- README: what to do when `⧉ copy` shows but Ctrl+click does nothing
+  (`FORCE_HYPERLINK=1`).
+
 ## 0.6.1
 
 - Linux: a click now fills the primary selection too, so a middle-click or

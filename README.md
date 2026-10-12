@@ -60,6 +60,22 @@ mode with `/tui default`. In fullscreen the mod steps aside.
 macOS would need its own click handler (a file type that runs `pbcopy`). Happy to take a
 PR from someone who can test it on a real Mac.
 
+### `⧉ copy` shows but Ctrl+click does nothing
+
+Claude Code only makes links clickable when it recognises the terminal. In
+WSL it looks for `WT_SESSION`, which Windows Terminal sets but which doesn't
+always reach WSL, for example when WSL was started from the Start menu. Then
+the link is drawn as plain text: it looks right and does nothing.
+
+Tell Claude Code your terminal handles links, then start a new session:
+
+```
+echo 'export FORCE_HYPERLINK=1' >> ~/.bashrc
+```
+
+Use `~/.zshrc` if your shell is zsh. To check the current window:
+`echo "$WT_SESSION"` prints nothing when it is missing.
+
 ## How it works
 
 Normal mode has no click events. The one click you get is the terminal's own
