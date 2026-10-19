@@ -63,8 +63,10 @@ const world = (on: On, { canCopy = true, checkExit, installer, stored, gate, wsl
   on('fs.stat', () => ({ deny: 'ENOENT' }))
   on('fs.list', () => ({ value: [] }))
   on('session.start', ($, e) => ({ cwd: e.cwd }))
-  on('classic.SessionStart', () => ({}))
-  on('session.id', () => ({ value: 'sess-1' }))
+  on('session.end', ($, e) => ({ sessionId: e.sessionId }))
+  on('turn.complete', ($, e) => ({ text: e.answer }))
+  let id = 'sess-1'
+  on('session.id', () => ({ value: id }))
   on('session.messages', () => ({ value: replies.map(text => ({ role: 'assistant' as const, text, toolUses: [] })) }))
   on('ui.invalidate', () => ({ value: undefined }))
   const notices: string[] = []
@@ -80,7 +82,9 @@ const world = (on: On, { canCopy = true, checkExit, installer, stored, gate, wsl
   })
   const adds = () => runs.filter(r => r[0] === 'reg.exe' && r[1] === 'add')
   const saved = () => [...files.entries()].filter(([p]) => p.endsWith('.ccopy'))
-  return { breakMime: () => (mimeBroken = true), notices, runs, files, reg, asked, adds, saved, clock, lose: () => (executable = false) }
+  // The engine moving to another session, as /resume, /clear and /branch do.
+  const swap = (to: string) => (id = to)
+  return { breakMime: () => (mimeBroken = true), notices, runs, files, reg, asked, adds, saved, clock, swap, lose: () => (executable = false) }
 }
 
 const message = (text: string, extra: Record<string, unknown> = {}, surface: 'terminal' | 'desktop' = 'terminal') => ({
@@ -90,7 +94,12 @@ const message = (text: string, extra: Record<string, unknown> = {}, surface: 'te
   props: { text, isFirstOfReply: true, ...extra },
 })
 
-const flat = (tree: unknown): string => JSON.stringify(tree)
+// Without the `part` the engine stamps on an element a hook returned: it says
+// whose hook answered, not what is drawn. A prop named part is kept.
+const flat = (tree: unknown): string =>
+  JSON.stringify(tree, function (this: Record<string, unknown>, k: string, v: unknown) {
+    return k === 'part' && 'type' in this && 'props' in this ? undefined : v
+  })
 const stock = (text: string) => flat({ type: 'Text', props: {}, children: [`STOCK:${text}`] })
 const settle = async () => {
   for (let i = 0; i < 2000; i++) await Promise.resolve()
@@ -188,11 +197,56 @@ test('a block that fails to write does not stop the others, and is retried', asy
   expect(w.saved().map(([, b]) => b).sort()).toEqual(['one', 'two'])
 })
 
-test('/resume saves the loaded conversation, which session.start never sees', async ($, on) => {
+const ended = (reason: 'clear' | 'resume' | 'prompt_input_exit', sessionId = 'sess-1') => ({ reason, sessionId, resume: { id: sessionId } })
+const folders = (w: { saved: () => [string, string][] }) => w.saved().map(([p, b]) => [p.split('/').at(-2), b])
+
+test('/resume and /branch save the loaded conversation, which session.start never sees', async ($, on) => {
   const w = world(on, { replies: [REPLY] })
-  await $.classic.SessionStart({ source: 'resume' })
+  await started($)
+  w.swap('sess-2')
+  await $.session.end(ended('resume'))
   await settle()
-  expect(w.saved().map(([, b]) => b)).toEqual(['echo hi'])
+  expect(folders(w)).toEqual([['sess-1', 'echo hi'], ['sess-2', 'echo hi']])
+})
+
+test('the save waits until the engine has moved to the new session', async ($, on) => {
+  const w = world(on, { replies: [REPLY] })
+  await started($)
+  await $.session.end(ended('resume'))
+  await settle()
+  expect(folders(w)).toEqual([['sess-1', 'echo hi']])
+  w.swap('sess-2')
+  await w.clock.advance(50)
+  await settle()
+  expect(folders(w)).toEqual([['sess-1', 'echo hi'], ['sess-2', 'echo hi']])
+})
+
+test('a move the wait never saw is saved at the end of the next turn', async ($, on) => {
+  const w = world(on, { replies: [REPLY] })
+  await started($)
+  w.swap('sess-2')
+  await $.turn.complete({ answer: '', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' })
+  await settle()
+  expect(folders(w)).toEqual([['sess-1', 'echo hi'], ['sess-2', 'echo hi']])
+})
+
+test('/clear stamps the new session folder at once', async ($, on) => {
+  const w = world(on)
+  await started($)
+  w.swap('sess-2')
+  await $.session.end(ended('clear'))
+  await settle()
+  expect(w.files.has(`${DIR}/sess-2/.last`)).toBe(true)
+})
+
+test('an exit saves and stamps nothing', async ($, on) => {
+  const w = world(on, { replies: [REPLY] })
+  await started($)
+  w.swap('sess-2')
+  await $.session.end(ended('prompt_input_exit'))
+  await settle()
+  expect(folders(w)).toEqual([['sess-1', 'echo hi']])
+  expect(w.files.has(`${DIR}/sess-2/.last`)).toBe(false)
 })
 
 // ---- Linux -------------------------------------------------------------------
