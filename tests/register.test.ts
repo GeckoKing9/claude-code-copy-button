@@ -90,7 +90,9 @@ const message = (text: string, extra: Record<string, unknown> = {}, surface: 'te
   props: { text, isFirstOfReply: true, ...extra },
 })
 
-const flat = (tree: unknown): string => JSON.stringify(tree)
+// Without `part`, the stamp the engine puts on each hook's returned root: it
+// says whose hook answered, not what is drawn.
+const flat = (tree: unknown): string => JSON.stringify(tree, (k, v) => (k === 'part' ? undefined : v))
 const stock = (text: string) => flat({ type: 'Text', props: {}, children: [`STOCK:${text}`] })
 const settle = async () => {
   for (let i = 0; i < 2000; i++) await Promise.resolve()
