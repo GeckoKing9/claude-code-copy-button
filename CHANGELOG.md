@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.6.3
+
+- No more "copy-button: its classic.SessionStart hook was skipped" at every
+  start on Claude Team and Enterprise accounts. Claude Code's built-in
+  `cc-plugin-sec-default` sends classic hook events past installed plugins
+  there, so `/resume`, `/clear` and `/branch` never reached the mod and links
+  on a resumed conversation's replies opened nothing. The mod now listens for
+  the session ending instead, waits for the new session id, then saves; a
+  move it misses is saved when the next turn ends.
+- Tests: pass on Claude Code 2.1.304, whose test kit stamps each drawn tree
+  with the plugin that drew it.
+
 ## 0.6.2
 
 - Wayland: blocks that look like Perl, PHP, Ruby or a certificate paste

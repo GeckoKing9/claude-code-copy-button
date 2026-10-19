@@ -30,6 +30,8 @@ const STAMP_EVERY_MS = 10 * 60_000
 const PRUNE_EVERY_MS = 60 * 60_000
 const RETRY_MS = 5 * 60_000
 const LOOKUP_WAIT_MS = 2_000
+const MOVE_WAIT_MS = 5_000
+const MOVE_POLL_MS = 50
 const STORE_KEY = 'home.v3'
 const MIME = 'application/x-claude-copy'
 const DESKTOP = 'claude-copy.desktop'
@@ -397,23 +399,37 @@ async function saveBlocks($: Host, h: Home, text: string): Promise<void> {
 
 // Every reply of the conversation: at start, after /resume or /clear, and
 // when this session's folder has gone missing.
+let savedFor: string | undefined
 async function saveAll($: Host, h: Home): Promise<void> {
+  const id = await $.session.id()
   for (const m of await $.session.messages()) if (m.role === 'assistant' && m.text) await saveBlocks($, h, m.text)
+  savedFor = id
 }
 
 // Marks this session's folder as in use. If it is gone (pruned by another
-// session after two idle days), every block is written again.
+// session after two idle days), every block is written again; so is every
+// reply of a conversation /resume, /clear or /branch moved to, which comes
+// with no session.start.
 let lastStamp = 0
 async function stamp($: Host, h: Home): Promise<void> {
   const now = Date.now()
-  if (now - lastStamp < STAMP_EVERY_MS) return
+  const id = await $.session.id()
+  const isMoved = savedFor !== undefined && id !== savedFor
+  if (!isMoved && now - lastStamp < STAMP_EVERY_MS) return
   lastStamp = now
-  const folder = `${h.dir}/${await $.session.id()}`
-  if (written.size && !(await $.fs.exists(folder))) {
+  const folder = `${h.dir}/${id}`
+  if (isMoved || (written.size && !(await $.fs.exists(folder)))) {
     written.clear()
     await saveAll($, h)
   }
   await $.fs.write(`${folder}/.last`, String(now))
+}
+
+// /resume, /clear and /branch end the session, then go on under another id.
+// Resolves once the id has moved or after MOVE_WAIT_MS; a move missed here is
+// saved by the next turn's stamp.
+async function moved($: Host, ending: string): Promise<void> {
+  for (let waited = 0; waited < MOVE_WAIT_MS && (await $.session.id()) === ending; waited += MOVE_POLL_MS) await $.clock.sleep(MOVE_POLL_MS)
 }
 
 // Deletes session folders unused for KEEP_MS, temp files copy.vbs left behind
@@ -456,13 +472,17 @@ export const register: Register = on => {
     return r
   })
 
-  // /resume and /clear swap the conversation without a session.start.
-  on('classic.SessionStart', async ($, e, next) => {
+  // Not classic.SessionStart: in a Team or Enterprise organization the
+  // built-in cc-plugin-sec-default sends classic events past every plugin a
+  // person installs. /branch ends the session as 'resume'. The wait stays out
+  // of the queue, so saves behind it are not held up.
+  on('session.end', async ($, e, next) => {
     const r = await next(e)
-    if (e.source === 'resume' || e.source === 'clear' || e.source === 'fork') {
-      lastStamp = 0
-      later($, 'save', h => saveAll($, h))
-      later($, 'stamp', h => stamp($, h))
+    if (e.reason === 'resume' || e.reason === 'clear') {
+      void moved($, e.sessionId).then(
+        () => later($, 'stamp', h => stamp($, h)),
+        err => log($, 'move', err),
+      )
     }
     return r
   })
